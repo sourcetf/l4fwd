@@ -20,15 +20,55 @@ func testLogger() *logx.Logger {
 	return l
 }
 
+// freePort returns a localhost port that is free for both TCP and UDP.
+//
+// A TCP-only probe is not enough on Windows. The port number space is shared, and
+// the system reserves ranges of it for itself (the "excluded port ranges" shown by
+// `netsh int ipv4 show excludedportrange protocol=tcp`, typically held by Hyper-V
+// or winnat). A bind into such a range fails with WSAEACCES — "An attempt was made
+// to access a socket in a way forbidden by its access permissions" — even though a
+// TCP listener had just released that very port number. Asking the kernel for a
+// UDP port and then verifying both protocols keeps a test from failing for a
+// reason that has nothing to do with the relay.
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
+	for attempt := 0; attempt < 50; attempt++ {
+		port := reserveUDPPort(t)
+		if !portFreeForTCP(port) {
+			continue
+		}
+		// Verify the UDP side explicitly: an excluded range refuses this bind.
+		pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+		if err != nil {
+			continue
+		}
+		_ = pc.Close()
+		return port
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
+	t.Fatal("找不到一个 TCP 和 UDP 都能绑定的本地端口")
+	return 0
+}
+
+// reserveUDPPort asks the kernel for an unused local UDP port.
+func reserveUDPPort(t *testing.T) int {
+	t.Helper()
+	pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("reserve udp port: %v", err)
+	}
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	_ = pc.Close()
 	return port
+}
+
+// portFreeForTCP reports whether a TCP listener can take the port.
+func portFreeForTCP(port int) bool {
+	ln, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }
 
 func waitFor(t *testing.T, d time.Duration, cond func() bool, msg string) {

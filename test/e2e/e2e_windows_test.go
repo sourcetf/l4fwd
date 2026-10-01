@@ -435,20 +435,32 @@ func startAgent(t *testing.T, rules []map[string]any, webAddr string) *agent {
 	return nil
 }
 
+// freePort returns a localhost port a TCP listener can bind.
+//
+// The number is asked for over UDP and then verified on TCP, because on Windows
+// the system reserves ranges of the port space for itself (Hyper-V / winnat
+// "excluded port ranges"): a bind into one of those fails with WSAEACCES —
+// "An attempt was made to access a socket in a way forbidden by its access
+// permissions" — even right after another socket released the same number.
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("free port: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	if port > 20000 {
-		// Windows ephemeral ports start at 49152; pick something below that so
-		// the alias-bound sockets do not collide with outbound connections.
+	for attempt := 0; attempt < 50; attempt++ {
+		pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatalf("free port: %v", err)
+		}
+		port := pc.LocalAddr().(*net.UDPAddr).Port
+		_ = pc.Close()
+
+		ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		_ = ln.Close()
 		return port
 	}
-	return port
+	t.Fatal("找不到一个可用的本地端口")
+	return 0
 }
 
 // ---------- tests ----------

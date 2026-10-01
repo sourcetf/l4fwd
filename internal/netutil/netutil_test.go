@@ -613,15 +613,32 @@ func TestListenUDPIsDualStack(t *testing.T) {
 	}
 }
 
+// freeTCPPort returns a localhost port a TCP listener can bind.
+//
+// The probe has to be a UDP bind: on Windows the system reserves ranges of the
+// port space for itself (Hyper-V / winnat "excluded port ranges"), where a bind
+// fails with WSAEACCES even though a TCP listener had just released the number.
+// Asking the kernel for a UDP port and then confirming the TCP side keeps tests
+// from failing for a reason unrelated to the code under test.
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
+	for attempt := 0; attempt < 50; attempt++ {
+		pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatalf("reserve port: %v", err)
+		}
+		port := pc.LocalAddr().(*net.UDPAddr).Port
+		_ = pc.Close()
+
+		ln, err := net.Listen("tcp4", HostPort("127.0.0.1", port))
+		if err != nil {
+			continue
+		}
+		_ = ln.Close()
+		return port
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	return port
+	t.Fatal("找不到一个 TCP 能绑定的本地端口")
+	return 0
 }
 
 func freeUDPPort(t *testing.T) int {
