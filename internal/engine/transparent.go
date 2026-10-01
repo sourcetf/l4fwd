@@ -136,7 +136,7 @@ func (t *TransparentTCPListener) Start() error {
 	target := netutil.HostPort(t.rule.TargetHost, t.rule.TargetPort)
 
 	if t.gated {
-		gate, err := netutil.ListenGated(t.rule.ListenHost, t.rule.ListenPort)
+		gate, err := netutil.ListenGated(t.rule.ListenHost, t.rule.ListenPort, t.set.ListenerBufferKB())
 		if err != nil {
 			// SO_CONDITIONAL_ACCEPT is not always available (some drivers, some
 			// RDP/loopback configurations reject it); fall back to a plain
@@ -148,7 +148,7 @@ func (t *TransparentTCPListener) Start() error {
 		}
 	}
 	if !t.gated {
-		ln, err := netutil.ListenTCP(t.rule.ListenHost, t.rule.ListenPort)
+		ln, err := netutil.ListenTCP(t.rule.ListenHost, t.rule.ListenPort, t.set.ListenerBufferKB())
 		if err != nil {
 			return fmt.Errorf("listen tcp(transparent) %s: %w", addr, err)
 		}

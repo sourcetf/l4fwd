@@ -140,7 +140,7 @@ func unregisterGate(key uintptr) {
 // gated listener serves IPv4 and IPv6 alike: Windows resolves "localhost" to ::1
 // first, and a client that only finds an IPv4 socket would report the forwarder as
 // unreachable.
-func ListenGated(host string, port int) (*GatedListener, error) {
+func ListenGated(host string, port int, bufferKB int) (*GatedListener, error) {
 	family := int32(windows.AF_INET6)
 	bindV6 := net.IPv6unspecified
 	bindV4 := net.IPv4zero
@@ -191,6 +191,9 @@ func ListenGated(host string, port int) (*GatedListener, error) {
 	// Nagle off on the listening socket: accepted sockets inherit it, and a relay
 	// must never hold a small write back waiting for a delayed ACK.
 	_ = windows.SetsockoptInt(fd, windows.IPPROTO_TCP, windows.TCP_NODELAY, 1)
+	// Socket buffers are inherited by accepted sockets too, which is what keeps a
+	// bulk transfer from being limited to one 64 KiB window per connection.
+	setSockbuf(uintptr(fd), bufferKB)
 	if family == int32(windows.AF_INET6) {
 		// Dual-stack: accept IPv4 connections on the same socket.
 		if err := windows.SetsockoptInt(fd, windows.IPPROTO_IPV6, windows.IPV6_V6ONLY, 0); err != nil {

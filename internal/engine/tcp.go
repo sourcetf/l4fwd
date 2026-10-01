@@ -53,7 +53,7 @@ func NewTCPListener(rule *config.Rule, set config.Settings, st *stats.RuleStats,
 // Start opens the listening socket and begins accepting.
 func (t *TCPListener) Start() error {
 	host := t.rule.ListenHost
-	ln, err := netutil.ListenTCP(host, t.rule.ListenPort)
+	ln, err := netutil.ListenTCP(host, t.rule.ListenPort, t.set.ListenerBufferKB())
 	if err != nil {
 		return fmt.Errorf("listen tcp %s: %w", netutil.HostPort(host, t.rule.ListenPort), err)
 	}

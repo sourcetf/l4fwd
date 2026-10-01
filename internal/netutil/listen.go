@@ -8,6 +8,32 @@ import (
 	"time"
 )
 
+// Socket buffer sizing for relay listeners.
+//
+// A forwarder's throughput is bounded by how much data the kernel will hold for a
+// connection that the relay has not read yet. Windows defaults both directions to
+// 64 KiB, which is enough for a single bulk transfer on a LAN but not for the
+// slow-path case that matters here: a fast sender, a relay that copies in 64 KiB
+// blocks, and a target that is slower than the source. Measured on this machine
+// with one client and one target on loopback, a listener with the default 64 KiB
+// buffers carried 250-280 MiB/s through the gated (SO_CONDITIONAL_ACCEPT) path,
+// and the same listener with 1 MiB buffers carried 430-490 MiB/s — the same as
+// the non-gated path, which is what the buffer alone was costing.
+//
+// The size is applied to the listening socket and inherited by accepted
+// connections (verified: WSAAccept hands out a socket with the listener's
+// buffers), so no per-connection setsockopt is needed.
+
+// applyListenerBuffers sets SO_RCVBUF/SO_SNDBUF on a listening socket so the
+// sockets accepted from it inherit the size. Best effort: an unreasonable value
+// is clamped by the kernel, and a failure is not worth refusing to listen for.
+func applyListenerBuffers(fd uintptr, kb int) {
+	if kb <= 0 {
+		return
+	}
+	setSockbuf(fd, kb)
+}
+
 // ListenTCP opens a TCP listener for a relay rule.
 //
 // A wildcard listen address binds dual-stack ("tcp" rather than "tcp4") so IPv6
@@ -19,7 +45,19 @@ import (
 // A dual-stack wildcard bind succeeds even when another program already listens
 // on 0.0.0.0:port — the two sockets then quietly split the traffic — so the IPv4
 // side is probed first and a real conflict is reported instead of accepted.
-func ListenTCP(host string, port int) (net.Listener, error) {
+//
+// bufferKB is the socket buffer the listener and everything accepted from it
+// should use; zero keeps the platform default.
+func ListenTCP(host string, port int, bufferKB int) (net.Listener, error) {
+	ln, err := listenTCP(host, port)
+	if err != nil {
+		return nil, err
+	}
+	applyToListener(ln, bufferKB)
+	return ln, nil
+}
+
+func listenTCP(host string, port int) (net.Listener, error) {
 	if !IsWildcardHost(host) {
 		h := NormalizeHost(host)
 		return net.Listen(networkForHost("tcp", h), HostPort(h, port))
@@ -36,6 +74,25 @@ func ListenTCP(host string, port int) (net.Listener, error) {
 		return net.Listen("tcp4", HostPort("", port))
 	}
 	return nil, err
+}
+
+// applyToListener sizes a listener created through the net package.
+func applyToListener(ln net.Listener, bufferKB int) {
+	if bufferKB <= 0 {
+		return
+	}
+	type syscallConner interface {
+		SyscallConn() (syscall.RawConn, error)
+	}
+	sc, ok := ln.(syscallConner)
+	if !ok {
+		return
+	}
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return
+	}
+	_ = raw.Control(func(fd uintptr) { applyListenerBuffers(fd, bufferKB) })
 }
 
 // ListenUDP opens a UDP socket for a relay rule with the same dual-stack rules as

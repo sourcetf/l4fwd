@@ -99,7 +99,7 @@ func gatedPair(t *testing.T) (*GatedListener, net.Listener, int) {
 		}
 	}()
 	port := freeTCPPort(t)
-	gl, err := ListenGated("127.0.0.1", port)
+	gl, err := ListenGated("127.0.0.1", port, 0)
 	if err != nil {
 		upstreamLn.Close()
 		t.Fatalf("ListenGated: %v", err)

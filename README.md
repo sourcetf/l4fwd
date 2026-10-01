@@ -243,7 +243,8 @@ l4fwd.exe -type raw -proto all -listen 19001 -target 10.0.0.9:19001
 | `dialTimeoutSec` | `10` | 连目标超时 |
 | `idleTimeoutSec` | `0` | 整条连接空闲多久断开，`0` = 不限 |
 | `udpSessionTTLSec` | `60` | UDP/RAW 会话空闲回收时间；到点的会话连它的上游 socket 一起关掉 |
-| `bufferKB` | `64` | 收发缓冲区大小（KB）；它也是 UDP 会话自动上限的依据（64 MiB ÷ 缓冲大小） |
+| `bufferKB` | `64` | 转发器自己用的拷贝缓冲区大小（KB）；它也是 UDP 会话自动上限的依据（64 MiB ÷ 缓冲大小） |
+| `listenBufferKB` | `1024` | **内核**给每个 TCP 监听（及由此接受的连接）预留的收发缓冲（KB）。Windows 默认 64 KiB，会把批量吞吐压到一半左右，见下方「关于吞吐」 |
 | `samplerMs` | `1000` | 面板速率采样周期 |
 | `startOnBoot` / `autoStartRules` | `false` | 预留开关（当前由计划任务/启动项控制自启） |
 
@@ -435,12 +436,30 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
 > 小包 0.65~0.75 µs。`internal/engine/bench_test.go` 有 6 个基准，
 > `allocbudget_test.go` 把"热路径每包 0 次分配"写成了断言，改坏了会直接测试失败。
 
-> **关于 TCP 转发速率**：TCP 的**客户端侧**在透明转发路径上也由 `WinConn` 驱动，现在它是
-> **先收后等**：`WSARecv` 先试一次，只有队列空（`WSAEWOULDBLOCK`）才停到 `WSAPoll` 上。
-> 转发器的对端通常都已经有数据在排队，所以绝大多数读都省掉了那次 poll —— 每 KiB 的 CPU
-> 开销从 3.5 µs 降到 1.3 µs（本机回环实测，用户态 0 / 内核态占绝大部分）。
-> 端到端吞吐（256 MiB 块，本机回环）：直连 380~540 MiB/s，经 TCP 转发 250~380 MiB/s，
-> 经透明转发 215~255 MiB/s —— 差值是这条路要过两个用户态中继，不是等待。
+> **关于 TCP 转发速率（重要）**：批量吞吐的瓶颈是**内核给每个连接预留的 socket 缓冲**，
+> 不是转发器自己的拷贝循环。Windows 两个方向都默认 64 KiB，转发器把数据从内核收上来、
+> 再写回内核，两个方向各一个 64 KiB 窗口，整条链路就被限制在这个窗口的周转速度上。
+> 本机回环实测（512 MiB 单流，各 6 轮取中位数）：
+
+| 路径 | 默认 64 KiB 缓冲 | `listenBufferKB: 1024` |
+|---|---|---|
+| 直连（无转发器） | 592 MiB/s | — |
+| 经 TCP 转发 | 436 MiB/s | **514 MiB/s** |
+| 经透明转发（门控） | **247 MiB/s** | **493 MiB/s** |
+
+> 所以 `listenBufferKB` 现在是**默认 1 MiB**，加在监听套接字上——Windows 会把监听套接字的
+> 收发缓冲**继承给 accept 出来的连接**（有回归测试 `TestListenerBuffersAreInherited` 钉住这一点），
+> 所以不需要每个连接再 setsockopt。透明转发路径受益最大（+100%），因为门控监听比普通监听
+> 更容易在握手后暴露这个窗口。转发器自身的 CPU 大约是一个核的 50~60%，其中 85% 是内核态拷贝。
+>
+> 客户端侧在透明路径上由 `WinConn` 驱动，现在是**先收后等**：`WSARecv` 先试一次，只有队列空
+> （`WSAEWOULDBLOCK`）才停到 `WSAPoll` 上。转发器的对端通常已经有数据在排队，所以绝大多数读都
+> 省掉了那次 poll。
+>
+> 参照数据（本机回环，同一台机器）：Linux 内核态方案在这里没有对应物——Windows 自带的
+> `netsh interface portproxy`（内核态转发）实测只有 **55~63 MiB/s**，不到这个转发器的九分之一；
+> 一个"照抄 nginx 参数"的最小 Go 转发器（大缓冲 + 非阻塞读 + 回环快通道）实测 380~440 MiB/s。
+> 也就是说现在的数字已经贴着这台机器用户态转发的上限，再往上要换掉整条数据通路。
 
 ---
 

@@ -37,7 +37,7 @@ func TestConditionCallbackArityDeliversSlotKey(t *testing.T) {
 	}
 	for _, tc := range cases {
 		port := freeTCPPort(t)
-		gl, err := ListenGated("127.0.0.1", port)
+		gl, err := ListenGated("127.0.0.1", port, 0)
 		if err != nil {
 			t.Fatalf("ListenGated: %v", err)
 		}

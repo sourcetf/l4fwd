@@ -511,7 +511,7 @@ func TestSCTPPatchRefusesIncrementalUpdate(t *testing.T) {
 // `ssh localhost -p <port>` fail even though the forwarder works.
 func TestListenTCPIsDualStack(t *testing.T) {
 	port := freeTCPPort(t)
-	ln, err := ListenTCP("", port)
+	ln, err := ListenTCP("", port, 0)
 	if err != nil {
 		t.Fatalf("ListenTCP wildcard: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestListenTCPReportsPortConflict(t *testing.T) {
 	defer other.Close()
 	port := other.Addr().(*net.TCPAddr).Port
 
-	ln, err := ListenTCP("", port)
+	ln, err := ListenTCP("", port, 0)
 	if err == nil {
 		_ = ln.Close()
 		t.Fatal("ListenTCP accepted a port that another program already holds")

@@ -16,7 +16,7 @@ type GatedListener struct{}
 var ErrGatedUnsupported = errors.New("gated listeners are only implemented on Windows")
 
 // ListenGated always fails on non Windows platforms.
-func ListenGated(string, int) (*GatedListener, error) { return nil, ErrGatedUnsupported }
+func ListenGated(string, int, int) (*GatedListener, error) { return nil, ErrGatedUnsupported }
 
 // Addr is unsupported.
 func (g *GatedListener) Addr() net.Addr { return nil }

@@ -9,6 +9,7 @@
     "idleTimeoutSec": 0,
     "udpSessionTTLSec": 60,
     "bufferKB": 64,
+    "listenBufferKB": 1024,
     "samplerMs": 1000,
     "startOnBoot": false,
     "autoStartRules": false

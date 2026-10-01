@@ -46,10 +46,34 @@ type Settings struct {
 	IdleTimeoutSec   int    `json:"idleTimeoutSec"`
 	UDPSessionTTLSec int    `json:"udpSessionTTLSec"`
 	BufferKB         int    `json:"bufferKB"`
-	SamplerMs        int    `json:"samplerMs"`
-	StartOnBoot      bool   `json:"startOnBoot"`
-	AutoStartRules   bool   `json:"autoStartRules"`
+	// ListenBufferKB sizes the kernel socket buffers of every TCP listener (and,
+	// through inheritance, of the connections accepted from them). It is separate
+	// from bufferKB because the two answer different questions: bufferKB is the
+	// relay's own copy buffer and the basis for the UDP session cap, while this is
+	// the amount of data the kernel may hold for a connection the relay has not
+	// read yet. Windows defaults to 64 KiB, which caps a bulk transfer well below
+	// what the machine can move; see netutil.ListenTCP for the measurements.
+	ListenBufferKB int  `json:"listenBufferKB"`
+	SamplerMs      int  `json:"samplerMs"`
+	StartOnBoot    bool `json:"startOnBoot"`
+	AutoStartRules bool `json:"autoStartRules"`
 }
+
+// ListenBufferKB returns the socket buffer size for listeners, falling back to a
+// size that lets a bulk transfer run at the speed of the slowest hop. Zero in the
+// config means "use the default".
+func (s Settings) ListenerBufferKB() int {
+	if s.ListenBufferKB > 0 {
+		return s.ListenBufferKB
+	}
+	return DefaultListenBufferKB
+}
+
+// DefaultListenBufferKB is the listener socket buffer applied when the config does
+// not say. 1 MiB is what measured equal to an unbuffered-tuned relay on loopback
+// (see netutil.ListenTCP); larger values only help on paths with a long
+// bandwidth-delay product, which a forwarder is rarely the bottleneck of.
+const DefaultListenBufferKB = 1024
 
 // WebConfig controls the embedded dashboard.
 type WebConfig struct {
