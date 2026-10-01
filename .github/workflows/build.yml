@@ -164,8 +164,13 @@ jobs:
         # 加地址需要管理员权限。GitHub 托管的 Windows runner 通常可以，但这不是
         # 我们能控制的：失败时后面的端到端测试会自动跳过需要别名地址的 RAW 用例，
         # 其余用例照常执行，所以这一步不让整条流水线变红。
+        #
+        # 超时是必需的：New-NetIPAddress 在受限的 runner 上可能长时间不返回，
+        # 实测这一步曾把整条流水线挂住一个多小时（最后只能强制取消）。
+        timeout-minutes: 3
         continue-on-error: true
         run: |
+          $ErrorActionPreference = 'Stop'
           $primary = Get-NetIPAddress -AddressFamily IPv4 |
             Where-Object { $_.IPAddress -notlike '127.*' -and $_.InterfaceAlias -notmatch 'Loopback' } |
             Sort-Object -Property SkipAsSource | Select-Object -First 1
@@ -175,6 +180,9 @@ jobs:
           # 那会被当成值的一部分，导致地址解析失败。
           "L4FWD_E2E_LISTEN=$($primary.IPAddress)" |
             Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          # 别名地址加在真实网卡上。回环地址（127.0.0.x）虽然可以直接绑定，但
+          # Windows 不会把回环流量交给 SIO_RCVALL，原始套接字用例在那边抓不到包
+          # （实测），所以不能用回环代替。
           powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Add -InterfaceName "$($primary.InterfaceAlias)"
 
       - name: 端到端测试
@@ -183,11 +191,14 @@ jobs:
           L4FWD_BIN: ${{ github.workspace }}\bin\l4fwd.exe
           L4FWD_E2E_CLIENT: 172.16.0.40
           L4FWD_E2E_TARGET: 172.16.0.41
+        timeout-minutes: 10
         run: bash scripts/e2e.sh
 
       - name: 清理别名地址
         if: always()
         shell: pwsh
+        timeout-minutes: 2
+        continue-on-error: true
         run: powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove
 
   # ---------------------------------------------------------------------------
