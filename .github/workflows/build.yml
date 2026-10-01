@@ -110,21 +110,22 @@ jobs:
           sha256sum l4fwd.exe l4fwd-admin.exe rawtest.exe > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: 打包
-        shell: pwsh
+      - name: 整理产物
+        shell: bash
+        # 这里不做 zip：PowerShell 的 Compress-Archive 会把路径写成反斜杠，
+        # Linux 上的 unzip 拒绝解压（实测），而产物本来就是要单独上传到
+        # Release 的文件。打包交给发布任务用 zip 完成。
         run: |
-          $name = "l4fwd-${{ steps.version.outputs.version }}-windows-amd64"
-          New-Item -ItemType Directory -Path "dist/$name" -Force | Out-Null
-          Copy-Item bin/l4fwd.exe, bin/l4fwd-admin.exe, bin/rawtest.exe, bin/SHA256SUMS.txt "dist/$name/"
-          Copy-Item README.md, LICENSE, config.example.json "dist/$name/"
-          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
-          Get-ChildItem dist
+          mkdir -p dist
+          cp bin/l4fwd.exe bin/l4fwd-admin.exe bin/rawtest.exe bin/SHA256SUMS.txt dist/
+          cp README.md LICENSE config.example.json dist/
+          ls -la dist/
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: l4fwd-windows-amd64
-          path: dist/*.zip
+          path: dist/*
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -155,8 +156,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p bin
-          cd dist && for f in *.zip; do unzip -o "$f"; done && cd ..
-          cp dist/*/l4fwd.exe dist/*/rawtest.exe bin/
+          cp dist/l4fwd.exe dist/rawtest.exe bin/
           ls -la bin/
 
       - name: 配置别名地址并选择监听地址
@@ -208,11 +208,15 @@ jobs:
           name: l4fwd-windows-amd64
           path: dist
 
-      - name: 解压
+      - name: 整理资产
         run: |
-          cd dist
-          for f in *.zip; do unzip -o "$f"; done
-          find . -type f | sort
+          set -euo pipefail
+          ls -la dist
+          missing=0
+          for f in l4fwd.exe l4fwd-admin.exe rawtest.exe SHA256SUMS.txt; do
+            [ -f "dist/$f" ] || { echo "缺少资产 $f" >&2; missing=1; }
+          done
+          [ "$missing" -eq 0 ] || exit 1
 
       - name: 发布 / 更新
         env:
@@ -257,13 +261,27 @@ jobs:
             CHANNEL_FLAG="--prerelease --latest=false"
           fi
 
-          # 排掉可能的空项（解压目录名因版本串不同而变化），只留下真实存在的文件。
-          mapfile -t assets < <(ls dist/*/l4fwd.exe dist/*/l4fwd-admin.exe dist/*/rawtest.exe dist/*/SHA256SUMS.txt 2>/dev/null)
-          if [ "${#assets[@]}" -ne 4 ]; then
-            echo "期望 4 个发布资产，实际 ${#assets[@]} 个" >&2
-            printf '%s\n' "${assets[@]}" >&2
-            exit 1
+          # 再压缩一份整包，方便用户一次下载全部文件（用 Linux 的 zip 而不是
+          # PowerShell 的 Compress-Archive，后者会写成反斜杠路径条目，
+          # 在 Linux/macOS 上解压会失败）。
+          BUNDLE="l4fwd-${TAG}-windows-amd64.zip"
+          if command -v zip >/dev/null 2>&1; then
+            zip -j "$BUNDLE" dist/l4fwd.exe dist/l4fwd-admin.exe dist/rawtest.exe \
+              dist/SHA256SUMS.txt dist/README.md dist/LICENSE dist/config.example.json
+          else
+            python3 -m zipfile -c "$BUNDLE" \
+              dist/l4fwd.exe dist/l4fwd-admin.exe dist/rawtest.exe \
+              dist/SHA256SUMS.txt dist/README.md dist/LICENSE dist/config.example.json
           fi
+          ls -la "$BUNDLE"
+
+          assets=(
+            dist/l4fwd.exe
+            dist/l4fwd-admin.exe
+            dist/rawtest.exe
+            dist/SHA256SUMS.txt
+            "$BUNDLE"
+          )
           printf '资产：%s\n' "${assets[@]}"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
