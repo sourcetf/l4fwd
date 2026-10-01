@@ -1,0 +1,278 @@
+name: build
+
+# 测试 → 构建 → 端到端 → 发布。
+#
+# 触发与行为：
+#   push 到 master/main    → 测试、构建、端到端，更新 "latest" 预发布（跟随最新提交）
+#   push tag v*            → 测试、构建、端到端，发布正式 Release（标记为 Latest）
+#   pull_request           → 只跑测试与端到端（不发布）
+#   手动 workflow_dispatch → 同 master
+#
+# l4fwd 是 Windows 专用工具（原始套接字、SIO_RCVALL 混杂捕获、双栈门控监听、防火墙
+# 管理都走 Win32 API），所以测试/构建/端到端都在 windows runner 上跑；发布用 ubuntu。
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) 测试门禁：go vet、gofmt、单元 + 集成测试（真实 TCP/UDP 收发）。
+  # ---------------------------------------------------------------------------
+  test:
+    name: 测试
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        shell: bash
+        run: go vet ./...
+
+      - name: gofmt 检查
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal ./test ./build ./tools)"
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未通过 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: 单元 + 集成测试
+        shell: bash
+        run: go test ./internal/... -count=1 -timeout 900s
+
+      - name: 覆盖率
+        shell: bash
+        run: go test ./internal/... -count=1 -coverprofile=coverage.out -covermode=atomic
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 2) 构建：两个清单版本的 exe + 原始套接字测试工具，打包并上传。
+  # ---------------------------------------------------------------------------
+  build:
+    name: 构建
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 确定版本号
+        id: version
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="0.0.0-latest"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "版本号：$v"
+
+      - name: 构建（嵌入清单与版本资源）
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash scripts/build.sh
+
+      - name: 计算校验和
+        shell: bash
+        run: |
+          cd bin
+          sha256sum l4fwd.exe l4fwd-admin.exe rawtest.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $name = "l4fwd-${{ steps.version.outputs.version }}-windows-amd64"
+          New-Item -ItemType Directory -Path "dist/$name" -Force | Out-Null
+          Copy-Item bin/l4fwd.exe, bin/l4fwd-admin.exe, bin/rawtest.exe, bin/SHA256SUMS.txt "dist/$name/"
+          Copy-Item README.md, LICENSE, config.example.json "dist/$name/"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+          Get-ChildItem dist
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: l4fwd-windows-amd64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3) 端到端：用刚构建出来的 exe 跑真实报文测试。
+  #
+  #    先在本机网卡上临时加两个别名地址（客户端 172.16.0.40 / 目标 172.16.0.41），
+  #    RAW 协议号与混杂捕获的用例需要它们；监听地址用 runner 自己的主地址。
+  #    这一步跑的是发布用的那个二进制，所以"能发布"就意味着"真的转发过"。
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: 端到端
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: l4fwd-windows-amd64
+          path: dist
+
+      - name: 解出二进制
+        shell: bash
+        run: |
+          mkdir -p bin
+          cd dist && for f in *.zip; do unzip -o "$f"; done && cd ..
+          cp dist/*/l4fwd.exe dist/*/rawtest.exe bin/
+          ls -la bin/
+
+      - name: 配置别名地址并选择监听地址
+        shell: pwsh
+        # 加地址需要管理员权限。GitHub 托管的 Windows runner 通常可以，但这不是
+        # 我们能控制的：失败时后面的端到端测试会自动跳过需要别名地址的 RAW 用例，
+        # 其余用例照常执行，所以这一步不让整条流水线变红。
+        continue-on-error: true
+        run: |
+          $primary = Get-NetIPAddress -AddressFamily IPv4 |
+            Where-Object { $_.IPAddress -notlike '127.*' -and $_.InterfaceAlias -notmatch 'Loopback' } |
+            Sort-Object -Property SkipAsSource | Select-Object -First 1
+          if (-not $primary) { throw "找不到可用的 IPv4 主地址" }
+          Write-Host "监听地址使用 $($primary.IPAddress)（网卡 $($primary.InterfaceAlias)）"
+          # 用 ASCII 写 GITHUB_ENV：PowerShell 5.1 的 -Encoding utf8 会带 BOM，
+          # 那会被当成值的一部分，导致地址解析失败。
+          "L4FWD_E2E_LISTEN=$($primary.IPAddress)" |
+            Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Add -InterfaceName "$($primary.InterfaceAlias)"
+
+      - name: 端到端测试
+        shell: bash
+        env:
+          L4FWD_BIN: ${{ github.workspace }}\bin\l4fwd.exe
+          L4FWD_E2E_CLIENT: 172.16.0.40
+          L4FWD_E2E_TARGET: 172.16.0.41
+        run: bash scripts/e2e.sh
+
+      - name: 清理别名地址
+        if: always()
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove
+
+  # ---------------------------------------------------------------------------
+  # 4) 发布：
+  #    tag v*      → 正式 Release（标记为 Latest），资产挂在 tag 上
+  #    master/main → 覆盖更新 "latest" 预发布（永远指向最新构建）
+  # ---------------------------------------------------------------------------
+  release:
+    name: 发布
+    needs: [build, e2e]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: l4fwd-windows-amd64
+          path: dist
+
+      - name: 解压
+        run: |
+          cd dist
+          for f in *.zip; do unzip -o "$f"; done
+          find . -type f | sort
+
+      - name: 发布 / 更新
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+            TITLE="l4fwd ${REF_NAME#v}"
+            NOTES=$(cat <<EOF
+          Windows 四层 / 原始套接字端口转发工具 ${REF_NAME#v}。
+
+          资产：
+          - l4fwd.exe：普通版（不弹 UAC），TCP/UDP 转发开箱可用
+          - l4fwd-admin.exe：全功能版（启动弹 UAC），额外支持 RAW 原始套接字与混杂捕获
+          - rawtest.exe：原始套接字抓包 / 发包测试工具
+          - SHA256SUMS.txt：校验和
+
+          构建于提交 ${SHA:0:7}，已通过单元/集成测试与端到端测试。
+          EOF
+          )
+            CHANNEL_FLAG="--latest"
+          else
+            TAG="latest"
+            TITLE="latest（跟随 master 最新构建）"
+            NOTES=$(cat <<EOF
+          master 分支最新构建，提交 ${SHA:0:7}。
+
+          这是滚动预发布，每次 master 有新提交都会覆盖更新；正式版本见 v* 标签的 Release。
+
+          资产：
+          - l4fwd.exe：普通版（不弹 UAC），TCP/UDP 转发开箱可用
+          - l4fwd-admin.exe：全功能版（启动弹 UAC），额外支持 RAW 原始套接字与混杂捕获
+          - rawtest.exe：原始套接字抓包 / 发包测试工具
+          - SHA256SUMS.txt：校验和
+          EOF
+          )
+            CHANNEL_FLAG="--prerelease --latest=false"
+          fi
+
+          # 排掉可能的空项（解压目录名因版本串不同而变化），只留下真实存在的文件。
+          mapfile -t assets < <(ls dist/*/l4fwd.exe dist/*/l4fwd-admin.exe dist/*/rawtest.exe dist/*/SHA256SUMS.txt 2>/dev/null)
+          if [ "${#assets[@]}" -ne 4 ]; then
+            echo "期望 4 个发布资产，实际 ${#assets[@]} 个" >&2
+            printf '%s\n' "${assets[@]}" >&2
+            exit 1
+          fi
+          printf '资产：%s\n' "${assets[@]}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖更新资产"
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" $CHANNEL_FLAG
+          else
+            echo "创建 Release $TAG"
+            gh release create "$TAG" "${assets[@]}" --title "$TITLE" --notes "$NOTES" $CHANNEL_FLAG
+          fi
+
+          gh release view "$TAG"

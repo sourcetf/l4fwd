@@ -1,0 +1,15 @@
+# 换行与二进制标记。
+#
+# 仓库在 Windows 上开发、在 Linux 上发布，所以换行必须确定，不能依赖各人本机的
+# core.autocrlf 设置：shell 脚本在 Linux runner 上直接执行，必须保持 LF。
+* text=auto
+
+*.sh        text eol=lf
+*.ps1       text eol=crlf
+*.manifest  text eol=crlf
+*.json      text eol=lf
+*.go        text eol=lf
+
+*.exe       binary
+*.png       binary
+*.zip       binary

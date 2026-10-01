@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-28T00:00:00Z",
+  "settings": {
+    "logLevel": "info",
+    "logToFile": false,
+    "logFile": "l4fwd.log",
+    "dialTimeoutSec": 10,
+    "idleTimeoutSec": 0,
+    "udpSessionTTLSec": 60,
+    "bufferKB": 64,
+    "samplerMs": 1000,
+    "startOnBoot": false,
+    "autoStartRules": false
+  },
+  "web": {
+    "enabled": true,
+    "listen": "127.0.0.1:8686",
+    "username": "admin",
+    "password": "",
+    "openBrowser": true
+  },
+  "rules": [
+    {
+      "id": "example-tcp-web",
+      "name": "把本机 8080 转到 192.168.1.10 的 80",
+      "kind": "tcp",
+      "listenHost": "0.0.0.0",
+      "listenPort": 8080,
+      "targetHost": "192.168.1.10",
+      "targetPort": 80,
+      "enabled": true,
+      "description": "浏览器访问 http://<本机IP>:8080 即等于访问 192.168.1.10:80",
+      "dialTimeoutSec": 5,
+      "idleTimeoutSec": 0,
+      "maxConns": 0
+    },
+    {
+      "id": "example-udp-dns",
+      "name": "本机 5353/UDP 转发到内网 DNS",
+      "kind": "udp",
+      "listenHost": "0.0.0.0",
+      "listenPort": 5353,
+      "targetHost": "10.0.0.53",
+      "targetPort": 53,
+      "enabled": false,
+      "description": "UDP 会为每个客户端建一条独立会话，会话空闲 60 秒后回收",
+      "udpSessionTTLSec": 60
+    },
+    {
+      "id": "example-raw-tcp-transparent",
+      "name": "TCP 探测/客户端转发：本机 19001 -> 10.0.0.9:19001",
+      "kind": "raw",
+      "protocol": "tcp",
+      "rawTransport": "transparent",
+      "gate": true,
+      "listenHost": "0.0.0.0",
+      "listenPort": 19001,
+      "targetHost": "10.0.0.9",
+      "targetPort": 19001,
+      "enabled": false,
+      "description": "自己构造 TCP 报文、只做一次 connect 判断端口的客户端（tcping 类）用它；连接成功与否由目标决定，目标不可达时探测直接失败"
+    },
+    {
+      "id": "example-all-protocols",
+      "name": "全部协议转发：本机 19002 上 TCP/UDP/任意 IP 协议 -> 10.0.0.9",
+      "kind": "raw",
+      "protocol": "all",
+      "listenHost": "0.0.0.0",
+      "listenPort": 19002,
+      "targetHost": "10.0.0.9",
+      "targetPort": 19002,
+      "enabled": false,
+      "description": "一条规则同时监听 TCP（透明转发）、UDP（数据报）和其余所有 IP 协议（每个协议号一个原始套接字）；需要管理员运行，且同一台机器只需一条"
+    },
+    {
+      "id": "example-raw-gre",
+      "name": "GRE(IP 协议 47) 转发到 10.0.0.9",
+      "kind": "raw",
+      "protocol": "47",
+      "listenHost": "172.16.0.32",
+      "listenPort": 0,
+      "targetHost": "10.0.0.9",
+      "targetPort": 0,
+      "enabled": false,
+      "description": "原始套接字转发，必须是管理员运行；监听地址要写具体网卡 IP",
+      "sourceIP": "172.16.0.32",
+      "udpSessionTTLSec": 120
+    },
+    {
+      "id": "example-raw-custom",
+      "name": "自定义协议 200（自带端口头）转发",
+      "kind": "raw",
+      "protocol": "200",
+      "listenHost": "172.16.0.32",
+      "listenPort": 4000,
+      "targetHost": "172.16.0.41",
+      "targetPort": 4000,
+      "enabled": false,
+      "description": "用于自行实现原始套接字协议的程序：协议号随便，payload 前 4 字节是源/目的端口",
+      "payloadPorts": true,
+      "idleTimeoutSec": 120
+    }
+  ]
+}

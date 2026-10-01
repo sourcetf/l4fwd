@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>l4fwd 四层转发控制台</title>
+<style>
+:root{
+  --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+  --fg:#e6e9ef; --muted:#8b93a7; --accent:#4c8dff; --accent2:#2f6fe4;
+  --ok:#3ecf8e; --warn:#f5a524; --err:#ff5c5c; --in:#4c8dff; --out:#3ecf8e;
+  --radius:10px; --shadow:0 8px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--fg); font:14px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  display:flex; flex-direction:column; min-height:100vh;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--accent)}
+header{
+  display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);
+  border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10;
+}
+header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px;white-space:nowrap}
+header h1 span{color:var(--accent)}
+.badge{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:2px 8px}
+.spacer{flex:1}
+.btn{
+  background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 12px;
+  cursor:pointer;transition:.15s;white-space:nowrap
+}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent2);color:#fff}
+.btn.danger:hover{border-color:var(--err);color:var(--err)}
+.btn.tiny{padding:3px 8px;font-size:12px}
+main{padding:20px;display:flex;flex-direction:column;gap:18px;flex:1}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
+.card .k{font-size:12px;color:var(--muted);margin-bottom:6px}
+.card .v{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+.card .sub{font-size:12px;color:var(--muted);margin-top:4px}
+section.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.panel-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.panel-head h2{font-size:14px;margin:0;font-weight:600}
+.panel-foot{display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--line);background:var(--panel2);font-size:12px;color:var(--muted)}
+.panel-body{padding:0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+th input[type=checkbox],td input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
+th{color:var(--muted);font-weight:500;font-size:12px;background:var(--panel2);position:sticky;top:0}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.mono{font-family:ui-monospace,Consolas,"Cascadia Mono",monospace;font-size:12px}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.dot.off{background:var(--muted)}
+.dot.err{background:var(--err)}
+.tag{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-right:4px}
+.kind{font-weight:600;font-size:11px;padding:2px 7px;border-radius:6px;background:var(--panel2);border:1px solid var(--line)}
+.kind.tcp{color:#7ab8ff;border-color:#2b4a7d}
+.kind.udp{color:#8ee6a8;border-color:#2d5c3e}
+.kind.raw{color:#f0b264;border-color:#6d4f22}
+#log{
+  background:#0b0d11;border-top:1px solid var(--line);max-height:34vh;overflow:auto;
+  font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px 12px
+}
+#log div{white-space:pre-wrap;word-break:break-all;padding:1px 0}
+.lv-DEBUG{color:#6b7280}.lv-INFO{color:#9fb0cc}.lv-WARN{color:var(--warn)}.lv-ERROR{color:var(--err)}
+dialog{
+  background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:12px;
+  padding:0;width:min(620px,94vw);box-shadow:var(--shadow)
+}
+dialog::backdrop{background:rgba(0,0,0,.55)}
+.dlg-head{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center}
+.dlg-head h3{margin:0;font-size:15px}
+.dlg-body{padding:16px 18px;display:grid;gap:12px}
+.dlg-foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end}
+.field{display:grid;gap:5px}
+.field label{font-size:12px;color:var(--muted)}
+.field input,.field select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%}
+.field input:focus,.field select:focus{outline:none;border-color:var(--accent)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.hint{font-size:11px;color:var(--muted)}
+.switch{display:flex;align-items:center;gap:8px}
+.notice{padding:8px 12px;border-radius:8px;font-size:12px;display:none}
+.notice.show{display:block}
+.notice.err{background:rgba(255,92,92,.12);border:1px solid var(--err);color:#ffb4b4}
+.notice.ok{background:rgba(62,207,142,.12);border:1px solid var(--ok);color:#b6f0d3}
+.empty{padding:26px;text-align:center;color:var(--muted)}
+footer{padding:10px 20px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);background:var(--panel)}
+@media(max-width:760px){.grid2,.grid3{grid-template-columns:1fr}main{padding:12px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>l4fwd <span>四层转发</span></h1>
+  <span class="badge" id="ver">v-</span>
+  <span class="badge" id="conn">连接中…</span>
+  <div class="spacer"></div>
+  <button class="btn" id="btnFirewall" title="为当前规则的监听端口添加 Windows 防火墙入站放行规则（需要管理员）">放行防火墙</button>
+  <button class="btn" id="btnReload" title="从磁盘重新加载配置">重载配置</button>
+  <button class="btn primary" id="btnNew">+ 新建规则</button>
+</header>
+
+<main>
+  <div class="notice" id="notice"></div>
+  <div class="notice" id="fwWarn"></div>
+
+  <div class="cards">
+    <div class="card"><div class="k">运行中的规则</div><div class="v" id="sRules">-</div><div class="sub" id="sRulesSub"></div></div>
+    <div class="card"><div class="k">活动会话</div><div class="v" id="sActive">-</div><div class="sub">累计连接 <span id="sConns">-</span></div></div>
+    <div class="card"><div class="k">入站流量</div><div class="v" id="sRx">-</div><div class="sub"><span id="sRxRate">-</span> · 包 <span id="sRxPkts">-</span>（<span id="sRxPktRate">-</span>）</div></div>
+    <div class="card"><div class="k">出站流量</div><div class="v" id="sTx">-</div><div class="sub"><span id="sTxRate">-</span> · 包 <span id="sTxPkts">-</span>（<span id="sTxPktRate">-</span>）</div></div>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>转发规则</h2>
+      <span class="badge" id="ruleCount">0</span>
+      <div class="spacer"></div>
+      <span class="hint">TCP / UDP 转发到目标端口；RAW 用于任意 IP 协议（含自定义协议）</span>
+    </div>
+    <div class="panel-body">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:34px"><input type="checkbox" id="checkAll" title="全选/取消全选"></th>
+            <th style="width:70px">类型</th>
+            <th>监听</th>
+            <th>目标</th>
+            <th>状态</th>
+            <th class="num">活动</th>
+            <th class="num">入站</th>
+            <th class="num">出站</th>
+            <th class="num">速率 字节/包</th>
+            <th style="width:180px">操作</th>
+          </tr>
+        </thead>
+        <tbody id="ruleRows"></tbody>
+      </table>
+      <div class="empty" id="ruleEmpty">还没有规则，点击右上角「新建规则」开始。</div>
+    </div>
+    <div class="panel-foot" id="bulkBar" style="display:none">
+      <span id="bulkCount">已选 0 条</span>
+      <div class="spacer"></div>
+      <button class="btn tiny" id="bulkEnable">启用选中</button>
+      <button class="btn tiny" id="bulkDisable">停用选中</button>
+      <button class="btn tiny danger" id="bulkDelete">删除选中</button>
+      <button class="btn tiny" id="bulkClear">取消选择</button>
+    </div>
+  </section>
+</main>
+
+<section class="panel" style="margin:0 20px 18px;border-radius:var(--radius)">
+  <div class="panel-head">
+    <h2>运行日志</h2>
+    <div class="spacer"></div>
+    <label class="switch"><input type="checkbox" id="logAuto" checked> 自动滚动</label>
+    <button class="btn tiny" id="logClear">清屏</button>
+  </div>
+  <div id="log"></div>
+</section>
+
+<footer>
+  <span id="cfgPath"></span> · <span id="hosts"></span>
+</footer>
+
+<dialog id="dlgRule">
+  <form method="dialog" id="ruleForm">
+    <div class="dlg-head"><h3 id="dlgTitle">新建规则</h3></div>
+    <div class="dlg-body">
+      <div class="grid2">
+        <div class="field">
+          <label>协议类型</label>
+          <select id="fKind">
+            <option value="tcp">TCP（四层流式转发）</option>
+            <option value="udp">UDP（数据报转发）</option>
+            <option value="raw">RAW（任意 IP 协议 / 原始套接字）</option>
+          </select>
+        </div>
+        <div class="field" id="fProtoWrap" style="display:none">
+          <label>IP 协议</label>
+          <select id="fProtoMode">
+            <option value="one">指定协议</option>
+            <option value="all">全部协议（TCP + UDP + 其余所有 IP 协议）</option>
+          </select>
+          <input id="fProto" placeholder="例如 47 / gre / 200 / icmp" style="margin-top:6px">
+          <span class="hint" id="fProtoHint">支持 1-255 任意协议号，也支持常见名称（icmp/gre/esp/ah/sctp/ospf…）</span>
+        </div>
+        <div class="field" id="fTransportWrap" style="display:none">
+          <label>转发方式</label>
+          <select id="fTransport">
+            <option value="own">own：本项目自己的原始套接字（除 TCP 外都支持）</option>
+            <option value="transparent">transparent：交给内核协议栈建链到目标 TCP 端口</option>
+          </select>
+          <span class="hint">自行构造 TCP 报文的程序（tcping、自制握手、非标准 TCP 客户端）选 transparent；Windows 不允许原始套接字收发 TCP</span>
+        </div>
+      </div>
+      <div class="field" id="fAllHintWrap" style="display:none">
+        <span class="hint">「全部协议」= 一个规则同时监听同一个端口的 TCP（透明转发）、UDP（数据报）以及其余所有 IP 协议（每个协议号一个原始套接字）。因此监听端口和目标端口都必须填写。</span>
+      </div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>监听地址</label>
+          <input id="fListenHost" list="hostList" placeholder="0.0.0.0 = 所有网卡">
+          <datalist id="hostList"></datalist>
+        </div>
+        <div class="field" id="fListenPortWrap">
+          <label>监听端口</label>
+          <input id="fListenPort" type="number" min="0" max="65535" placeholder="例如 8080">
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>目标地址</label>
+          <input id="fTargetHost" placeholder="例如 192.168.1.10 或 example.com">
+        </div>
+        <div class="field" id="fTargetPortWrap">
+          <label>目标端口</label>
+          <input id="fTargetPort" type="number" min="1" max="65535" placeholder="例如 80">
+        </div>
+      </div>
+
+      <div class="grid3">
+        <div class="field">
+          <label>连接超时（秒）</label>
+          <input id="fDial" type="number" min="1" placeholder="10">
+        </div>
+        <div class="field">
+          <label>空闲超时（秒，0=不限）</label>
+          <input id="fIdle" type="number" min="0" placeholder="0">
+        </div>
+        <div class="field">
+          <label>会话 TTL（秒，RAW/UDP）</label>
+          <input id="fTTL" type="number" min="1" placeholder="60">
+        </div>
+      </div>
+
+      <div class="grid3">
+        <div class="field">
+          <label>最大会话数（0=不限）</label>
+          <input id="fMax" type="number" min="0" placeholder="0">
+        </div>
+        <div class="field">
+          <label>源 IP（RAW 发包用）</label>
+          <input id="fSrcIP" placeholder="留空自动选择本机 IP">
+        </div>
+        <div class="field">
+          <label>TTL（RAW，0=保留原值）</label>
+          <input id="fTTLIP" type="number" min="0" max="255" placeholder="0">
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>名称（可选）</label>
+          <input id="fName" placeholder="留空自动生成">
+        </div>
+        <div class="field">
+          <label>备注（可选）</label>
+          <input id="fDesc" placeholder="例如：游戏服转发">
+        </div>
+      </div>
+
+      <div class="switch">
+        <input type="checkbox" id="fEnabled" checked><label for="fEnabled">创建后立即启用</label>
+      </div>
+      <div class="switch" id="fSniffWrap" style="display:none">
+        <input type="checkbox" id="fSniff"><label for="fSniff">混杂捕获（SIO_RCVALL，抓取发给其它 IP 的报文，需绑定具体网卡 IP）</label>
+      </div>
+      <div class="switch" id="fPayloadPortsWrap" style="display:none">
+        <input type="checkbox" id="fPayloadPorts"><label for="fPayloadPorts">payload 前 4 字节是源/目的端口（自定义协议用，按端口区分会话）</label>
+      </div>
+      <div class="notice err" id="dlgErr"></div>
+    </div>
+    <div class="dlg-foot">
+      <button class="btn" value="cancel" id="btnCancel">取消</button>
+      <button class="btn primary" id="btnSave" type="button">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgConfirm">
+  <div class="dlg-head"><h3>确认操作</h3></div>
+  <div class="dlg-body"><div id="confirmMsg">确定要执行该操作吗？</div></div>
+  <div class="dlg-foot">
+    <button class="btn" id="confirmNo">取消</button>
+    <button class="btn primary danger" id="confirmYes">确定</button>
+  </div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { rules: [], editing: null, selected: new Set(), auth: localStorage.getItem('l4fwd_token') || '' };
+
+function fmtBytes(n){
+  n = Number(n||0);
+  const u=['B','KB','MB','GB','TB']; let i=0;
+  while(n>=1024 && i<u.length-1){n/=1024;i++;}
+  return (i===0? n.toFixed(0): n.toFixed(n<10?2:1))+' '+u[i];
+}
+function fmtRate(n){ return fmtBytes(n)+'/s'; }
+function fmtNum(n){ return Number(n||0).toLocaleString('en-US'); }
+function fmtDuration(sec){
+  sec = Number(sec||0);
+  const d=Math.floor(sec/86400), h=Math.floor(sec%86400/3600), m=Math.floor(sec%3600/60), s=Math.floor(sec%60);
+  if(d) return `${d}天${h}小时`;
+  if(h) return `${h}小时${m}分`;
+  if(m) return `${m}分${s}秒`;
+  return `${s}秒`;
+}
+function esc(s){ return String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function notice(msg, kind='ok'){
+  const el=$('#notice'); el.textContent=msg; el.className='notice show '+kind;
+  if(kind==='ok') setTimeout(()=>{ el.className='notice'; }, 3000);
+}
+
+async function api(path, opts={}){
+  const headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
+  if(state.auth) headers['Authorization']='Bearer '+state.auth;
+  const res = await fetch(path, Object.assign({}, opts, {headers}));
+  if(res.status===401){ promptLogin(); throw new Error('需要登录'); }
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch(e){ data = {raw:text}; }
+  if(!res.ok) throw new Error((data && (data.error||data.message)) || ('HTTP '+res.status));
+  return data;
+}
+
+function promptLogin(){
+  const u = prompt('用户名', 'admin');
+  if(u===null) return;
+  const p = prompt('密码');
+  if(p===null) return;
+  state.auth = btoa(u+':'+p);
+  localStorage.setItem('l4fwd_token', state.auth);
+  reload();
+}
+
+function statusPill(rt, enabled){
+  if(!enabled) return '<span class="pill"><span class="dot off"></span>已停用</span>';
+  if(rt && rt.running) return '<span class="pill"><span class="dot on"></span>运行中</span>';
+  if(rt && rt.error) return `<span class="pill" title="${esc(rt.error)}"><span class="dot err"></span>错误</span>`;
+  return '<span class="pill"><span class="dot off"></span>未启动</span>';
+}
+
+function ruleRow(r){
+  const rt = r.runtime || {};
+  const st = rt.stats || {};
+  const listen = r.kind==='raw'
+    ? `RAW ${esc(r.protocol||'')} @ ${esc(r.listenHost||'0.0.0.0')}`
+    : `${esc(r.listenHost||'0.0.0.0')}:${r.listenPort}`;
+  const target = r.kind==='raw'
+    ? `${esc(r.targetHost)}`
+    : `${esc(r.targetHost)}:${r.targetPort}`;
+  // Bytes and packets per second together: a rule carrying small datagrams is
+  // otherwise unreadable, because its byte rate looks idle.
+  const rate = `${fmtRate(st.speedInBps)} / ${fmtRate(st.speedOutBps)}`
+    + `<div class="hint">${fmtNum(st.pktInBps)} / ${fmtNum(st.pktOutBps)} 包/秒</div>`;
+  const err = rt.error ? `<div class="hint" style="color:var(--err)">${esc(rt.error)}</div>` : '';
+  const checked = state.selected.has(r.id) ? ' checked' : '';
+  return `<tr data-id="${r.id}">
+    <td><input type="checkbox" class="rowCheck" data-id="${r.id}"${checked}></td>
+    <td><span class="kind ${r.kind}">${r.kind.toUpperCase()}</span></td>
+    <td><div class="mono">${listen}</div><div class="hint">${esc(r.name||'')}</div>${err}</td>
+    <td class="mono">${target}</td>
+    <td>${statusPill(rt, r.enabled)}<div class="hint">${r.enabled?'':'已停用'}</div></td>
+    <td class="num">${rt.sessions||0}</td>
+    <td class="num">${fmtBytes(st.rxBytes)}<div class="hint">${fmtNum(st.rxPkts)} 包</div></td>
+    <td class="num">${fmtBytes(st.txBytes)}<div class="hint">${fmtNum(st.txPkts)} 包</div></td>
+    <td class="num">${rate}</td>
+    <td>
+      <button class="btn tiny" data-act="toggle">${r.enabled?'停用':'启用'}</button>
+      <button class="btn tiny" data-act="edit">编辑</button>
+      <button class="btn tiny danger" data-act="del">删除</button>
+    </td>
+  </tr>`;
+}
+
+// renderRules rebuilds the table when its content changed. The stats stream
+// calls it once per second, so identical data is skipped: rewriting tbody that
+// often would fight with the user's clicks and with Playwright's stability
+// checks.
+let lastRowsHTML = '';
+function renderRules(rows){
+  const tbody = $('#ruleRows');
+  // Drop selections for rules that no longer exist, then report the selection.
+  const live = new Set(rows.map(r => r.id));
+  for(const id of Array.from(state.selected)) if(!live.has(id)) state.selected.delete(id);
+  if(!rows.length){
+    if(lastRowsHTML !== ''){ tbody.innerHTML=''; lastRowsHTML=''; }
+    $('#ruleEmpty').style.display='block';
+    $('#ruleCount').textContent='0';
+    syncSelectionUI(rows);
+    return;
+  }
+  $('#ruleEmpty').style.display='none';
+  $('#ruleCount').textContent = rows.length;
+  const html = rows.map(ruleRow).join('');
+  if(html !== lastRowsHTML){
+    tbody.innerHTML = html;
+    lastRowsHTML = html;
+  }
+  syncSelectionUI(rows);
+}
+
+// syncSelectionUI keeps the header checkbox, the bulk bar and the footer in
+// step with the current selection.
+function syncSelectionUI(rows){
+  rows = rows || state.rules || [];
+  const n = state.selected.size;
+  const bar = $('#bulkBar');
+  bar.style.display = n ? '' : 'none';
+  $('#bulkCount').textContent = `已选 ${n} / ${rows.length} 条`;
+  const all = $('#checkAll');
+  all.checked = rows.length > 0 && n === rows.length;
+  all.indeterminate = n > 0 && n < rows.length;
+}
+
+function selectAllRules(on){
+  state.selected.clear();
+  if(on) for(const r of (state.rules||[])) state.selected.add(r.id);
+  renderRules(state.rules);
+}
+
+async function applyBulk(action){
+  const ids = Array.from(state.selected);
+  if(!ids.length){ notice('请先勾选规则', 'err'); return; }
+  const label = {enable:'启用', disable:'停用', delete:'删除'}[action] || action;
+  const run = async () => {
+    try{
+      const res = await api('/api/rules/batch', {method:'POST', body:JSON.stringify({action, ids})});
+      notice(`${label}成功：${res.applied} 条`);
+      state.selected.clear();
+      await reload();
+      syncSelectionUI(state.rules);
+    }catch(e){ notice(`${label}失败：${e.message}`, 'err'); }
+  };
+  if(action === 'delete'){
+    confirmBox(`确定删除选中的 ${ids.length} 条规则吗？此操作会立即停止它们的转发。`, run);
+    return;
+  }
+  await run();
+}
+
+let lastStats = null;
+function renderTotals(t){
+  lastStats = t;
+  const rules = state.rules || [];
+  const running = rules.filter(r => r.runtime && r.runtime.running).length;
+  $('#sRules').textContent = running + ' / ' + rules.length;
+  $('#sRulesSub').textContent = `累计连接 ${fmtNum(t.conns)}`;
+  $('#sActive').textContent = fmtNum(t.active);
+  $('#sConns').textContent = fmtNum(t.conns);
+  $('#sRx').textContent = fmtBytes(t.rxBytes);
+  $('#sRxRate').textContent = fmtRate(t.speedInBps);
+  $('#sRxPkts').textContent = fmtNum(t.rxPkts);
+  $('#sRxPktRate').textContent = fmtNum(t.pktInBps) + ' 包/秒';
+  $('#sTx').textContent = fmtBytes(t.txBytes);
+  $('#sTxRate').textContent = fmtRate(t.speedOutBps);
+  $('#sTxPkts').textContent = fmtNum(t.txPkts);
+  $('#sTxPktRate').textContent = fmtNum(t.pktOutBps) + ' 包/秒';
+}
+
+async function reload(){
+  try{
+    const data = await api('/api/overview');
+    state.rules = data.rules || [];
+    state.firewall = data.firewall || {};
+    $('#ver').textContent = 'v' + data.version;
+    $('#cfgPath').textContent = '配置：' + data.configPath;
+    $('#hosts').textContent = '本机地址：' + (data.hosts||[]).join(' / ');
+    const dl = $('#hostList');
+    dl.innerHTML = '<option value="0.0.0.0"></option>' + (data.hosts||[]).map(h=>`<option value="${esc(h)}"></option>`).join('');
+    renderRules(state.rules);
+    renderTotals(data.totals || {});
+    renderFirewall(data.firewall || {});
+    $('#conn').textContent = '已连接';
+    $('#conn').style.color = 'var(--ok)';
+  }catch(e){
+    $('#conn').textContent = '连接失败';
+    $('#conn').style.color = 'var(--err)';
+    notice('加载失败：'+e.message, 'err');
+  }
+}
+
+// renderFirewall warns when a listening port is not allowed through the Windows
+// firewall, which is the usual reason a forwarder looks like it does nothing for
+// clients on other machines while loopback still works.
+function renderFirewall(fw){
+  const box = $('#fwWarn');
+  if(!fw || fw.error || !fw.missing || fw.missing.length === 0){
+    box.className = 'notice';
+    box.innerHTML = '';
+    return;
+  }
+  box.className = 'notice show err';
+  box.innerHTML = `以下监听端口还没有被 Windows 防火墙放行，本机以外的客户端会连接超时：`
+    + `<b>${fw.missing.map(esc).join('、')}</b>。`
+    + ` 点右上角「放行防火墙」可自动添加（需要管理员）。`;
+}
+
+/* ---------- 实时流 ---------- */
+function startStats(){
+  const es = new EventSource('/api/stats/stream');
+  es.onmessage = ev => {
+    try{
+      const d = JSON.parse(ev.data);
+      const map = new Map((state.rules||[]).map(r=>[r.id, r]));
+      (d.rules||[]).forEach(row => {
+        const r = map.get(row.id);
+        if(r){ r.runtime = Object.assign({}, r.runtime, {running:row.running, error:row.error, stats:row.stats}); }
+      });
+      renderRules(state.rules);
+      renderTotals(d.totals||{});
+      $('#conn').textContent='已连接'; $('#conn').style.color='var(--ok)';
+    }catch(e){ console.error(e); }
+  };
+  es.onerror = () => { $('#conn').textContent='实时连接断开'; $('#conn').style.color='var(--warn)'; };
+}
+
+function appendLog(e){
+  const box = $('#log');
+  const div = document.createElement('div');
+  div.className = 'lv-' + (e.level||'INFO');
+  const ts = e.time ? new Date(e.time).toLocaleTimeString('zh-CN', {hour12:false}) : '';
+  div.textContent = `${ts} ${String(e.level||'').padEnd(5)} ${e.scope?('['+e.scope+'] '):''}${e.msg}`;
+  box.appendChild(div);
+  while(box.childElementCount > 800) box.removeChild(box.firstChild);
+  if($('#logAuto').checked) box.scrollTop = box.scrollHeight;
+}
+
+function startLogs(){
+  const es = new EventSource('/api/logs/stream');
+  es.onmessage = ev => { try{ appendLog(JSON.parse(ev.data)); }catch(e){} };
+}
+
+/* ---------- 规则弹窗 ---------- */
+function openRule(rule){
+  state.editing = rule || null;
+  $('#dlgTitle').textContent = rule ? '编辑规则' : '新建规则';
+  $('#dlgErr').className = 'notice err';
+  const r = rule || {kind:'tcp', listenHost:'0.0.0.0', enabled:true};
+  $('#fKind').value = r.kind || 'tcp';
+  $('#fProto').value = r.protocol || '';
+  $('#fProtoMode').value = (r.kind === 'raw' && String(r.protocol||'').toLowerCase() === 'all') ? 'all' : 'one';
+  $('#fListenHost').value = r.listenHost || '';
+  $('#fListenPort').value = r.listenPort || '';
+  $('#fTargetHost').value = r.targetHost || '';
+  $('#fTargetPort').value = r.targetPort || '';
+  $('#fDial').value = r.dialTimeoutSec || '';
+  $('#fIdle').value = r.idleTimeoutSec || '';
+  $('#fTTL').value = r.udpSessionTTLSec || '';
+  $('#fMax').value = r.maxConns || '';
+  $('#fSrcIP').value = r.sourceIP || '';
+  $('#fTTLIP').value = r.ttl || '';
+  $('#fName').value = r.name || '';
+  $('#fDesc').value = r.description || '';
+  $('#fEnabled').checked = rule ? !!r.enabled : true;
+  $('#fSniff').checked = !!r.sniff;
+  $('#fPayloadPorts').checked = !!r.payloadPorts;
+  $('#fTransport').value = r.rawTransport || (((r.protocol||'').toLowerCase()==='tcp' || (r.protocol||'')==='6') ? 'transparent' : 'own');
+  if(!r.rawTransport && r.kind === 'raw' && isTransparentRaw()) $('#fTransport').value = 'transparent';
+  syncKind();
+  $('#dlgRule').showModal();
+  setTimeout(()=>$('#fListenHost').focus(), 30);
+}
+
+// isAllProtocols reports whether the dialog is describing a rule that carries
+// every protocol at once.
+function isAllProtocols(){
+  return $('#fKind').value === 'raw' && $('#fProtoMode').value === 'all';
+}
+
+// isTransparentRaw reports whether the dialog is describing a rule that talks
+// to a real target port (TCP-shaped, "all protocols", or explicitly transparent).
+function isTransparentRaw(){
+  if($('#fKind').value !== 'raw') return false;
+  if(isAllProtocols()) return true;
+  const proto = $('#fProto').value.trim().toLowerCase();
+  const tr = $('#fTransport').value;
+  if(tr === 'transparent') return true;
+  return tr === '' && (proto === 'tcp' || proto === '6');
+}
+
+function syncKind(){
+  const k = $('#fKind').value;
+  const isRaw = k === 'raw';
+  const all = isAllProtocols();
+  const transparent = isTransparentRaw();
+  $('#fProtoWrap').style.display = isRaw ? '' : 'none';
+  $('#fProto').style.display = (isRaw && !all) ? '' : 'none';
+  // "all protocols" fixes the transport itself, so the selector is not offered.
+  $('#fTransportWrap').style.display = (isRaw && !all) ? '' : 'none';
+  $('#fAllHintWrap').style.display = all ? '' : 'none';
+  $('#fSniffWrap').style.display = (isRaw && !transparent) ? '' : 'none';
+  $('#fPayloadPortsWrap').style.display = (isRaw && !transparent) ? '' : 'none';
+  // Transparent forwarding owns a real local port and needs a target port,
+  // because the kernel stack terminates the TCP connection on both sides; "all"
+  // includes that TCP part, so it needs both ports too.
+  const needPorts = !isRaw || transparent;
+  $('#fListenPortWrap').style.display = needPorts ? '' : 'none';
+  $('#fTargetPortWrap').style.display = needPorts ? '' : 'none';
+}
+
+function closeRule(){ $('#dlgRule').close(); }
+
+async function saveRule(){
+  const kind = $('#fKind').value;
+  const all = isAllProtocols();
+  const transparent = isTransparentRaw();
+  const body = {
+    kind,
+    protocol: kind!=='raw' ? '' : (all ? 'all' : (transparent && !$('#fProto').value.trim() ? 'tcp' : $('#fProto').value.trim())),
+    rawTransport: kind==='raw' ? (all ? 'transparent' : $('#fTransport').value) : '',
+    listenHost: $('#fListenHost').value.trim(),
+    listenPort: (kind==='raw' && !transparent) ? 0 : Number($('#fListenPort').value||0),
+    targetHost: $('#fTargetHost').value.trim(),
+    targetPort: (kind==='raw' && !transparent) ? 0 : Number($('#fTargetPort').value||0),
+    dialTimeoutSec: Number($('#fDial').value||0),
+    idleTimeoutSec: Number($('#fIdle').value||0),
+    udpSessionTTLSec: Number($('#fTTL').value||0),
+    maxConns: Number($('#fMax').value||0),
+    payloadPorts: (kind==='raw' && !transparent) ? $('#fPayloadPorts').checked : false,
+    sourceIP: $('#fSrcIP').value.trim(),
+    ttl: Number($('#fTTLIP').value||0),
+    name: $('#fName').value.trim(),
+    description: $('#fDesc').value.trim(),
+    enabled: $('#fEnabled').checked,
+    sniff: (kind==='raw' && !transparent) ? $('#fSniff').checked : false
+  };
+  if(!body.targetHost){ showDlgErr('请填写目标地址'); return; }
+  if((kind!=='raw' || transparent) && !body.listenPort){ showDlgErr('请填写监听端口'); return; }
+  if((kind!=='raw' || transparent) && !body.targetPort){ showDlgErr('请填写目标端口'); return; }
+  if(kind==='raw' && !transparent && !body.protocol){ showDlgErr('请填写 IP 协议号或名称'); return; }
+  try{
+    if(state.editing){
+      await api('/api/rules/'+state.editing.id, {method:'PUT', body:JSON.stringify(body)});
+      notice('规则已更新');
+    }else{
+      await api('/api/rules', {method:'POST', body:JSON.stringify(body)});
+      notice('规则已创建');
+    }
+    closeRule();
+    await reload();
+  }catch(e){ showDlgErr(e.message); }
+}
+
+function showDlgErr(msg){
+  const el = $('#dlgErr'); el.textContent = msg; el.className = 'notice show err';
+}
+
+function confirmBox(msg, fn){
+  $('#confirmMsg').textContent = msg;
+  const dlg = $('#dlgConfirm');
+  const yes = $('#confirmYes'), no = $('#confirmNo');
+  const cleanup = () => { yes.onclick=null; no.onclick=null; dlg.close(); };
+  yes.onclick = async () => { cleanup(); await fn(); };
+  no.onclick = cleanup;
+  dlg.showModal();
+}
+
+/* ---------- 事件绑定 ---------- */
+$('#btnNew').onclick = () => openRule(null);
+$('#fKind').onchange = syncKind;
+$('#fProto').oninput = syncKind;
+$('#fProtoMode').onchange = syncKind;
+$('#fTransport').onchange = syncKind;
+$('#btnSave').onclick = saveRule;
+$('#btnCancel').onclick = closeRule;
+$('#logClear').onclick = () => { $('#log').innerHTML=''; };
+$('#checkAll').onchange = ev => selectAllRules(ev.target.checked);
+$('#bulkClear').onclick = () => { state.selected.clear(); renderRules(state.rules); };
+$('#bulkEnable').onclick = () => applyBulk('enable');
+$('#bulkDisable').onclick = () => applyBulk('disable');
+$('#bulkDelete').onclick = () => applyBulk('delete');
+$('#btnReload').onclick = async () => {
+  try{ await api('/api/action/reload', {method:'POST'}); notice('配置已重载'); await reload(); }
+  catch(e){ notice('重载失败：'+e.message, 'err'); }
+};
+$('#btnFirewall').onclick = async () => {
+  try{
+    const res = await api('/api/action/firewall', {method:'POST'});
+    notice(res.created > 0 ? `已添加 ${res.created} 条防火墙放行规则` : '所有监听端口都已放行');
+    await reload();
+  }catch(e){ notice('放行失败：'+e.message, 'err'); }
+};
+
+$('#ruleRows').addEventListener('click', async ev => {
+  const check = ev.target.closest('input.rowCheck');
+  if(check){
+    if(check.checked) state.selected.add(check.dataset.id);
+    else state.selected.delete(check.dataset.id);
+    syncSelectionUI(state.rules);
+    return;
+  }
+  const btn = ev.target.closest('button[data-act]');
+  if(!btn) return;
+  const tr = btn.closest('tr');
+  const id = tr.dataset.id;
+  const rule = state.rules.find(r => r.id === id);
+  if(!rule) return;
+  const act = btn.dataset.act;
+  if(act === 'edit'){ openRule(rule); return; }
+  if(act === 'toggle'){
+    try{
+      const body = Object.assign({}, rule, {enabled: !rule.enabled, runtime: undefined});
+      delete body.runtime;
+      await api('/api/rules/'+id, {method:'PUT', body:JSON.stringify(body)});
+      notice(rule.enabled ? '规则已停用' : '规则已启用');
+      await reload();
+    }catch(e){ notice('操作失败：'+e.message, 'err'); }
+    return;
+  }
+  if(act === 'del'){
+    confirmBox(`确定删除规则「${rule.name || rule.summary || id}」吗？`, async () => {
+      try{
+        await api('/api/rules/'+id, {method:'DELETE'});
+        notice('规则已删除');
+        await reload();
+      }catch(e){ notice('删除失败：'+e.message, 'err'); }
+    });
+  }
+});
+
+window.addEventListener('error', e => console.error(e.message));
+reload();
+startStats();
+startLogs();
+setInterval(reload, 30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+bin/
+_tools/
+gopath/
+gocache/
+*.log
+config.json
+*.tmp
