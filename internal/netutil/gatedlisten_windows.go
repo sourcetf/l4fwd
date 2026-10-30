@@ -328,6 +328,30 @@ type gatedConn struct {
 // Upstream returns the connection the gate established, if any.
 func (g *gatedConn) Upstream() net.Conn { return g.upstream }
 
+// SetNoDelay and SetKeepAlive forward the relay's tuning to the accepted socket.
+// Accepting through WSAAccept does not produce a *net.TCPConn, so the engine's
+// type assertion would miss it; these methods make the tuning type independent.
+func (g *gatedConn) SetNoDelay(on bool) error {
+	if tc, ok := g.Conn.(interface{ SetNoDelay(bool) error }); ok {
+		return tc.SetNoDelay(on)
+	}
+	return nil
+}
+
+func (g *gatedConn) SetKeepAlive(on bool) error {
+	if tc, ok := g.Conn.(interface{ SetKeepAlive(bool) error }); ok {
+		return tc.SetKeepAlive(on)
+	}
+	return nil
+}
+
+func (g *gatedConn) SetKeepAlivePeriod(d time.Duration) error {
+	if tc, ok := g.Conn.(interface{ SetKeepAlivePeriod(time.Duration) error }); ok {
+		return tc.SetKeepAlivePeriod(d)
+	}
+	return nil
+}
+
 // Close closes both sides.
 func (g *gatedConn) Close() error {
 	err := g.Conn.Close()

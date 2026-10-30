@@ -1,8 +1,8 @@
 //go:build windows
 
-// Package winutil contains Windows specific helpers: elevation checks, single
-// instance locking, firewall rules and service installation.
-package winutil
+// Package platform contains the operating system helpers: elevation checks,
+// single instance locking, firewall rules and the browser launcher.
+package platform
 
 import (
 	"errors"
@@ -236,24 +236,32 @@ func HideConsoleWindow() {
 	}
 }
 
+// FirewallSupported reports whether automatic inbound firewall rules exist.
+func FirewallSupported() bool { return true }
+
+// PrivilegeHint names the privilege raw forwarding needs on this system.
+func PrivilegeHint() string { return "管理员权限（UAC）" }
+
 // FirewallStatus summarises whether the inbound ports of a rule are open.
 type FirewallStatus struct {
 	// Checked is false when the process is not elevated, so nothing can be said.
-	Checked bool     `json:"checked"`
-	Missing []string `json:"missing,omitempty"`
-	Error   string   `json:"error,omitempty"`
+	Checked bool `json:"checked"`
+	// Supported is false on platforms without automatic firewall management.
+	Supported bool     `json:"supported"`
+	Missing   []string `json:"missing,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // InspectFirewall reports which of the given rule names are missing. It needs
 // administrator rights because netsh refuses to enumerate otherwise.
 func InspectFirewall(names []string) FirewallStatus {
 	if len(names) == 0 {
-		return FirewallStatus{Checked: true}
+		return FirewallStatus{Checked: true, Supported: true}
 	}
 	if !IsElevated() {
-		return FirewallStatus{Error: "需要管理员权限才能检查防火墙规则"}
+		return FirewallStatus{Supported: true, Error: "需要管理员权限才能检查防火墙规则"}
 	}
-	st := FirewallStatus{Checked: true}
+	st := FirewallStatus{Checked: true, Supported: true}
 	for _, n := range names {
 		if !FirewallRuleExists(n) {
 			st.Missing = append(st.Missing, n)

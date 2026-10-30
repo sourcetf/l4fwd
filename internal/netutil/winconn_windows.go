@@ -88,6 +88,11 @@ func (c *WinConn) SetKeepAlive(on bool) error {
 	return windows.SetsockoptInt(c.fd, windows.SOL_SOCKET, windows.SO_KEEPALIVE, v)
 }
 
+// SetKeepAlivePeriod accepts a keepalive interval for interface symmetry.
+// Windows configures the interval through SIO_KEEPALIVE_VALS rather than a
+// socket option, and the platform default is fine for a forwarded connection.
+func (c *WinConn) SetKeepAlivePeriod(time.Duration) error { return nil }
+
 // LocalAddr reports the local endpoint.
 func (c *WinConn) LocalAddr() net.Addr { return sockaddrAddr(mustSockname(c.fd)) }
 

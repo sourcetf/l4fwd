@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux && !openbsd
 
 package netutil
 
@@ -7,8 +7,8 @@ import (
 	"net"
 )
 
-// RawSock is unavailable outside Windows; the type exists so the engine
-// package still compiles for tests on other platforms.
+// RawSock is a stub on platforms without a raw socket implementation; the type
+// exists so the engine package still compiles there.
 type RawSock struct{}
 
 // RawSockOptions mirrors the Windows definition.
@@ -42,6 +42,9 @@ func (r *RawSock) Close() error { return nil }
 
 // Receive is unsupported.
 func (r *RawSock) Receive([]byte) (int, error) { return 0, ErrRawUnsupported }
+
+// ReceivePacket is unsupported.
+func (r *RawSock) ReceivePacket([]byte) ([]byte, error) { return nil, ErrRawUnsupported }
 
 // Send is unsupported.
 func (r *RawSock) Send([]byte, net.IP) error { return ErrRawUnsupported }

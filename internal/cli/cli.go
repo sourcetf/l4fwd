@@ -15,10 +15,10 @@ import (
 	"l4fwd/internal/engine"
 	"l4fwd/internal/logx"
 	"l4fwd/internal/netutil"
+	"l4fwd/internal/platform"
 	"l4fwd/internal/stats"
 	"l4fwd/internal/version"
 	"l4fwd/internal/webui"
-	"l4fwd/internal/winutil"
 )
 
 // Options carries the parsed command line.
@@ -72,8 +72,9 @@ func Run(opt Options) error {
 	}
 
 	logger.Infof("cli", "l4fwd 启动中，配置文件: %s", opt.ConfigPath)
-	if !winutil.IsElevated() {
-		logger.Warnf("cli", "当前未以管理员身份运行：TCP/UDP 转发可用，RAW 原始套接字会被系统拒绝（需要管理员权限）")
+	if !platform.IsElevated() {
+		logger.Warnf("cli", "当前未以 %s 运行：TCP/UDP 转发可用，RAW 原始套接字与混杂捕获会被系统拒绝",
+			platform.PrivilegeHint())
 	}
 
 	// A one-off rule from the command line is validated before anything starts.
@@ -170,7 +171,7 @@ func Run(opt Options) error {
 			srv = nil
 		} else if webCfg.OpenURL && !opt.NoBrowser {
 			url := browserURL(webCfg.Listen)
-			if err := winutil.OpenInBrowser(url); err != nil {
+			if err := platform.OpenInBrowser(url); err != nil {
 				logger.Debugf("web", "无法自动打开浏览器: %v", err)
 			} else {
 				logger.Infof("web", "已在浏览器中打开 %s", url)
@@ -247,8 +248,11 @@ func buildCommandLineRule(opt Options) (*config.Rule, error) {
 //	rawTransport "transparent"  – the TCP half of a TCP-shaped rule
 //	protocol "all"              – its TCP and UDP halves
 func applyFirewall(cfg *config.Config, logger *logx.Logger) error {
-	if !winutil.IsElevated() {
-		return errors.New("添加防火墙规则需要管理员权限，请右键以管理员身份运行")
+	if !platform.FirewallSupported() {
+		return errors.New("自动放行防火墙仅支持 Windows；Linux 请用 ufw/nftables，OpenBSD 请编辑 /etc/pf.conf")
+	}
+	if !platform.IsElevated() {
+		return errors.New("添加防火墙规则需要 " + platform.PrivilegeHint())
 	}
 	type opening struct {
 		name  string
@@ -287,7 +291,7 @@ func applyFirewall(cfg *config.Config, logger *logx.Logger) error {
 
 	added := 0
 	for _, o := range wanted {
-		if err := winutil.AddFirewallRule(winutil.FirewallRule{Name: o.name, Port: o.port, Proto: o.proto}); err != nil {
+		if err := platform.AddFirewallRule(platform.FirewallRule{Name: o.name, Port: o.port, Proto: o.proto}); err != nil {
 			logger.Warnf("firewall", "%s 添加失败: %v", o.name, err)
 			continue
 		}
@@ -380,7 +384,7 @@ func restartProcess(logger *logx.Logger) func() {
 		args := os.Args[1:]
 		// Wait for the HTTP response to flush, then hand the console over.
 		time.Sleep(300 * time.Millisecond)
-		if err := winutil.Elevate(append([]string{}, args...)); err != nil {
+		if err := platform.Elevate(append([]string{}, args...)); err != nil {
 			logger.Warnf("cli", "提权重启失败，尝试直接启动: %v", err)
 			cmd := newCommand(exe, args...)
 			if err := cmd.Start(); err != nil {

@@ -107,19 +107,4 @@ func TestTransparentIdleConnectionDoesNotSpin(t *testing.T) {
 	}
 }
 
-// itoa avoids importing strconv in a file that mostly deals with sockets.
-func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [12]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
-}
-
 var _ = io.EOF

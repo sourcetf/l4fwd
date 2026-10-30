@@ -1,9 +1,9 @@
-# l4fwd — Windows 四层端口转发 / 原始套接字任意协议转发
+# l4fwd — 四层端口转发 / 原始套接字任意协议转发（Windows / Linux / OpenBSD）
 
-一个小巧的 Windows 转发工具：在本机任意地址的任意端口上监听，把收到的**整包数据原样**
+一个小巧的跨平台转发工具：在本机任意地址的任意端口上监听，把收到的**整包数据原样**
 转发到目标 IP 和端口。除了 TCP / UDP，它还能通过原始套接字（SOCK_RAW）转发**任意 IP 协议**
 ——包括你自己用原始套接字实现、系统协议栈根本不认识的非标准协议。带网页面板，可以随时增删规则、
-看实时流量和日志。
+看实时流量和日志。三个平台共用一套配置、一套面板、一套测试；平台差异见下面「平台支持」。
 
 ```
  客户端                 l4fwd (本机)                  目标服务器
@@ -13,6 +13,36 @@
     │                           │  ③ 回包映射回客户端      │
     │◄──────────────────────────┤◄────────────────────────┤
 ```
+
+---
+
+## 平台支持
+
+| 能力 | Windows | Linux | OpenBSD |
+|---|---|---|---|
+| TCP / UDP 转发 | ✅ | ✅ | ✅ |
+| 任意 IP 协议（RAW） | ✅ 需管理员 | ✅ 需 root 或 `CAP_NET_RAW` | ✅ 需 root |
+| 混杂捕获 | ✅ `SIO_RCVALL`（监听地址必须是具体网卡 IP） | ✅ `AF_PACKET`（默认路由网卡，可指定） | ✅ `/dev/bpf` |
+| TCP 透明转发 | ✅ 内核建连 + 握手门控 | ✅ 内核建连（门控在 accept 之后） | ✅ 同 Linux |
+| 网页面板 / 热加载 | ✅ | ✅ | ✅ |
+| 自动放行防火墙 | ✅ netsh | ❌ 自行 ufw/nftables | ❌ 自行 `/etc/pf.conf` |
+| 双栈（IPv4+IPv6）监听 | ✅ | ✅ | ✅ |
+
+差异要点：
+
+- **目标门控**：Windows 用 `SO_CONDITIONAL_ACCEPT` 把客户端的握手挂在“目标连接成功”之后，
+  所以 `tcping` 这类只做 connect 的探测能拿到目标端口的真实状态。Linux/OpenBSD 的内核在
+  `accept()` 返回之前就完成了握手，用户态无法阻止；转发器仍会在目标不可达时**立刻发 RST**，
+  所以读写会马上失败，但“只 connect 不看数据”的探测会先看到连接成功。这是平台能力差异，
+  不是配置问题。
+- **套接字缓冲**：Windows 把监听套接字的缓冲继承给 accept 出来的连接；Linux/OpenBSD 每个
+  连接单独设置（`listenBufferKB` 同样生效）。Linux 上非 root 进程的 `SO_RCVBUF` 受
+  `net.core.rmem_max` 限制（默认约 208 KiB），root 会用 `SO_RCVBUFFORCE` 绕过。
+- **防火墙**：只有 Windows 能自动加规则。Linux/OpenBSD 的包过滤配置模型差异太大
+  （ufw / nftables / pf），工具不替你改；面板会隐藏「放行防火墙」按钮，`-firewall`
+  会提示手动命令。
+- **UAC / 提权**：Windows 有 `l4fwd-admin.exe`（弹 UAC）；Linux/OpenBSD 用 `sudo` 启动即可，
+  面板重启仍是普通重新执行，不提权。
 
 ---
 
@@ -26,8 +56,8 @@
 - **网页面板**：规则增删改启停、实时速率/字节/包数/会话数、运行日志滚动（SSE 推送），可设账号密码，可只读模式。
 - **配置热加载**：`config.json` 一改就自动生效（2 秒轮询），也可以在面板点“重载配置”。
 - **命令行一把梭**：不写配置文件也能直接 `-listen` / `-target` 转发一条。
-- **防火墙放行**：`l4fwd.exe -firewall` 或面板上的「放行防火墙」按钮，把每条规则真正占用的 TCP/UDP 端口加进 Windows 入站规则；面板还会**主动告警**哪些端口没放行（本机连得上、别的机器却超时，十有八九就是这个）。
-- 单文件绿色：不写注册表、不装驱动、不开服务，删掉 exe 就干净了。
+- **防火墙放行（仅 Windows）**：`l4fwd.exe -firewall` 或面板上的「放行防火墙」按钮，把每条规则真正占用的 TCP/UDP 端口加进 Windows 入站规则；面板还会**主动告警**哪些端口没放行（本机连得上、别的机器却超时，十有八九就是这个）。Linux/OpenBSD 请自行用 ufw/nftables/pf 放行，面板会隐藏这个按钮。
+- 单文件绿色：不写注册表、不装驱动、不开服务（Linux/OpenBSD 也不装守护进程），删掉二进制就干净了。
 
 ---
 
@@ -79,6 +109,15 @@ l4fwd.exe -firewall
 l4fwd.exe -check
 ```
 
+Linux / OpenBSD 的用法完全相同，二进制叫 `l4fwd`；原始套接字用 `sudo` 启动：
+
+```bash
+sudo ./l4fwd -listen 8080 -target 192.168.1.10:80          # TCP/UDP 其实不需要 root
+sudo ./l4fwd -type raw -proto 200 -target 10.0.0.9         # RAW 需要 root
+sudo setcap cap_net_raw+ep ./l4fwd                         # 或者只给二进制 CAP_NET_RAW（Linux）
+./l4fwd -no-browser                                        # 面板默认只监听 127.0.0.1
+```
+
 常用参数（`l4fwd.exe -h` 看全部）：
 
 | 参数 | 说明 |
@@ -107,35 +146,49 @@ l4fwd.exe -check
 
 ### 为什么需要管理员
 
-Windows 从 Vista 起限制原始套接字：非管理员可以创建原始套接字**发送**报文，但**接收**会被
-拒绝（`WSAEACCES`）。要收包就必须以管理员身份运行。建议直接用 `bin\l4fwd-admin.exe`
-（已内嵌 `requireAdministrator` 清单，启动弹一次 UAC）或右键“以管理员身份运行”。
+### 为什么需要特权
 
-### 监听地址必须是具体网卡 IP
+- **Windows**：从 Vista 起限制原始套接字：非管理员可以创建原始套接字**发送**报文，但**接收**
+  会被拒绝（`WSAEACCES`）。要收包就必须以管理员身份运行。建议直接用 `bin\l4fwd-admin.exe`
+  （已内嵌 `requireAdministrator` 清单，启动弹一次 UAC）或右键“以管理员身份运行”。
+- **Linux**：需要 root 或 `CAP_NET_RAW`（`sudo setcap cap_net_raw+ep ./l4fwd` 后普通用户也能跑）。
+- **OpenBSD**：原始套接字与 `/dev/bpf` 都只对 root 开放。
+
+TCP/UDP 转发不需要任何特权（监听 1024 以下的端口除外）。
+
+### 监听地址（Windows 限制）
 
 Windows 不允许在 `0.0.0.0` 上做原始套接字的混杂捕获（`SIO_RCVALL` 会返回 `WSAEINVAL`），
-所以 RAW 规则的**监听地址要写具体网卡 IP**，程序会在日志里告诉你本机有哪些可用地址。
+所以 **Windows 上** RAW 规则的监听地址要写具体网卡 IP，程序会在日志里告诉你本机有哪些可用地址。
 面板上的监听地址输入框带下拉候选，就是这些地址。
+
+Linux/OpenBSD 没有这个限制：`0.0.0.0` 会收所有本机地址的该协议报文；混杂捕获在
+`0.0.0.0` 时自动挂到默认路由网卡（Linux 读 `/proc/net/route`，OpenBSD 取第一个非回环网卡），
+也可以用 `listenHost` 指定网卡 IP 来收窄范围。
 
 ### 三种工作模式
 
 | 模式 | 触发条件 | 收到的包 | 适用场景 |
 |---|---|---|---|
-| 本地收包 | `listenHost` = 本机 IP，不勾混杂 | 目的地址是本机 IP 的、该协议的包 | 对端主动连本机（最常见） |
-| 混杂捕获 | 勾选“混杂捕获（SIO_RCVALL）” | 该网卡上**所有**该协议的包，包括发给别人 IP 的 | 旁路监听/透明接管 |
+| 本地收包 | `listenHost` = 本机 IP（或 `0.0.0.0`），不勾混杂 | 目的地址是本机 IP 的、该协议的包 | 对端主动连本机（最常见） |
+| 混杂捕获 | 勾选“混杂捕获” | 该网卡上**所有**该协议的包，包括发给别人 IP 的 | 旁路监听/透明接管 |
 | 纯发送 | 只用于内部 | — | — |
+
+混杂捕获的实现按平台不同：Windows `SIO_RCVALL`、Linux `AF_PACKET`（内核里按协议号过滤，
+所以“全部协议”规则不会把同一份流量放大 250 倍）、OpenBSD `/dev/bpf`。
 
 ### TCP 协议要选“透明转发”
 
-Windows 从 Vista 起**不允许原始套接字收发 TCP**：在原始 TCP 套接字上 bind 或发一个手工构造的
-SYN 都会直接返回 `WSAEINVAL`（本机实测，TCP 是唯一被这样拦住的常见协议，ICMP/UDP/GRE/自定义
-协议号都能正常收发）。所以「协议号填 tcp / 6」时不能按包转发，改用**透明转发**：
+TCP 是有状态协议，按包转发会直接破坏连接（Windows 甚至禁止原始 TCP 套接字：bind/发送都会返回
+`WSAEINVAL`）。所以「协议号填 tcp / 6」时改用**透明转发**：
 
 - 转发器在本机监听规则里的端口，收到连接后**用内核协议栈替客户端连到目标的真实 TCP 端口**，
   双向数据原样搬运；
-- 默认开启**目标门控**：客户端的 TCP 握手要等到目标那边连接成功才完成，目标连不上就直接拒绝，
-  所以 tcping 这类“只做一次 connect 来判断端口通不通”的工具，得到的是**目标端口的真实状态**，
-  而不是转发器自己的状态（`"gate": false` 可关掉这个行为）；
+- **Windows** 默认开启**目标门控**：客户端的 TCP 握手要等到目标那边连接成功才完成，目标连不上
+  就直接拒绝，所以 tcping 这类“只做一次 connect 来判断端口通不通”的工具，得到的是**目标端口
+  的真实状态**（`"gate": false` 可关掉这个行为）；
+- **Linux/OpenBSD** 的内核在 `accept()` 之前就完成了握手，门控无法阻止 connect 成功；目标不可达时
+  转发器会立刻 RST 掉连接，读写马上报错，但只做 connect 的探测会先看到“连上了”。详见「平台支持」；
 - 只做 connect 不发数据的探测、以及正常的 TCP 客户端，都走同一条路径，日志里能看到
   `TCP 透明转发 ... 已建连`。
 
@@ -149,7 +202,7 @@ SYN 都会直接返回 `WSAEINVAL`（本机实测，TCP 是唯一被这样拦住
 
 | 部分 | 承载方式 | 说明 |
 |---|---|---|
-| TCP | 透明转发（内核协议栈建连到目标端口） | Windows 不允许原始套接字收发 TCP |
+| TCP | 透明转发（内核协议栈建连到目标端口） | TCP 有状态，不能按包转发 |
 | UDP | 普通 UDP 数据报转发 | 保持数据报边界，按客户端分会话 |
 | 其余所有 IP 协议 | 每个协议号一个原始套接字 | 1–254 里除 4 / 6 / 17 / 41 之外的 250 个协议号，各自的会话独立 |
 
@@ -244,7 +297,7 @@ l4fwd.exe -type raw -proto all -listen 19001 -target 10.0.0.9:19001
 | `idleTimeoutSec` | `0` | 整条连接空闲多久断开，`0` = 不限 |
 | `udpSessionTTLSec` | `60` | UDP/RAW 会话空闲回收时间；到点的会话连它的上游 socket 一起关掉 |
 | `bufferKB` | `64` | 转发器自己用的拷贝缓冲区大小（KB）；它也是 UDP 会话自动上限的依据（64 MiB ÷ 缓冲大小） |
-| `listenBufferKB` | `1024` | **内核**给每个 TCP 监听（及由此接受的连接）预留的收发缓冲（KB）。Windows 默认 64 KiB，会把批量吞吐压到一半左右，见下方「关于吞吐」 |
+| `listenBufferKB` | `1024` | **内核**给每个 TCP 连接预留的收发缓冲（KB）。Windows 默认 64 KiB、Linux 约 128 KiB、OpenBSD 32 KiB 左右，都会把批量吞吐压到一半以下，见下方「关于吞吐」 |
 | `samplerMs` | `1000` | 面板速率采样周期 |
 | `startOnBoot` / `autoStartRules` | `false` | 预留开关（当前由计划任务/启动项控制自启） |
 
@@ -265,7 +318,7 @@ l4fwd.exe -type raw -proto all -listen 19001 -target 10.0.0.9:19001
 | `dialTimeoutSec` / `idleTimeoutSec` / `udpSessionTTLSec` | 全部 | 覆盖全局设置 |
 | `maxConns` | tcp/udp + transparent | 并发连接/会话上限；`0` 表示按内存预算自动取值（UDP ≈ 64 MiB ÷ 会话缓冲，RAW 默认 4096），**不会真正无限制**，上限可在配置里调高（UDP 最大 65536，RAW 最大 16384）。「全部协议」规则里 TCP 这一半不参与均分、至少 512（见下方「资源上限」） |
 | `payloadPorts` | raw (own) | payload 前 4 字节是端口对 |
-| `sniff` | raw (own) | 混杂捕获（SIO_RCVALL） |
+| `sniff` | raw (own) | 混杂捕获（Windows `SIO_RCVALL` / Linux `AF_PACKET` / OpenBSD `/dev/bpf`） |
 | `sourceIP` | raw (own) | 转发时报文使用的源地址 |
 | `ttl` | raw (own) | 改写 TTL，`0` 保留原值 |
 
@@ -303,27 +356,32 @@ l4fwd.exe -type raw -proto tcp -listen 19001 -target 10.0.0.9:19001
 
 ## 构建
 
-需要 Go 1.26+（本仓库自带一份工具链时，用 `env.sh` 注入环境）。
+需要 Go 1.26+（本仓库自带一份工具链时，用 `env.sh` 注入环境）。三个平台共用同一份源码：
 
 ```bash
-bash scripts/build.sh          # 产出 bin/l4fwd.exe、bin/l4fwd-admin.exe、bin/rawtest.exe
-bash scripts/test.sh           # go vet + 单元测试 + TCP/UDP 真实收发集成测试
-bash scripts/e2e.sh            # 端到端测试：真实启动 exe 验证 TCP/UDP/RAW 与面板
+bash scripts/build.sh                      # 构建当前系统
+TARGET_OS=linux   bash scripts/build.sh    # 交叉编译 Linux  → bin/l4fwd-linux-amd64
+TARGET_OS=openbsd bash scripts/build.sh    # 交叉编译 OpenBSD → bin/l4fwd-openbsd-amd64
+bash scripts/test.sh                       # go vet + 单元测试 + TCP/UDP 真实收发集成测试
+bash scripts/e2e.sh                        # 端到端测试：真实启动二进制验证 TCP/UDP/RAW 与面板
 ```
 
-`bin/` 下三个产物：
+`bin/` 下的产物：
 
-| 文件 | 说明 |
-|---|---|
-| `l4fwd.exe` | 普通版（asInvoker）。TCP/UDP 转发开箱可用，不弹 UAC；RAW 功能会提示需要管理员 |
-| `l4fwd-admin.exe` | 全功能版（requireAdministrator）。启动弹 UAC，RAW 原始套接字可用 |
-| `rawtest.exe` | 小巧的原始套接字抓包/发包工具，用来验证 RAW 转发、模拟自定义协议 |
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| Windows | `l4fwd.exe` | 普通版（asInvoker）。TCP/UDP 转发开箱可用，不弹 UAC；RAW 功能会提示需要管理员 |
+| Windows | `l4fwd-admin.exe` | 全功能版（requireAdministrator）。启动弹 UAC，RAW 原始套接字可用 |
+| Windows | `rawtest.exe` | 原始套接字抓包/发包工具，用来验证 RAW 转发、模拟自定义协议 |
+| Linux | `l4fwd` | 单文件；RAW 需要 root 或 `CAP_NET_RAW` |
+| OpenBSD | `l4fwd-openbsd-amd64` | 单文件；RAW 与 `/dev/bpf` 需要 root |
+| 全平台 | `rawtest` | 与 Windows 版功能相同，用法见下 |
 
-`rawtest` 用法：
+`rawtest` 用法（Windows 上加 `.exe`；`-sniff` 在三个平台上都能用，分别走 SIO_RCVALL / AF_PACKET / BPF）：
 
 ```bash
-# 混杂捕获某协议报文（需管理员），只打印目标端口是 4000 的
-rawtest.exe observe -iface 172.16.0.32 -proto 200 -seconds 10 -port 4000
+# 混杂捕获某协议报文（需特权），只打印目标端口是 4000 的
+rawtest observe -iface 172.16.0.32 -proto 200 -seconds 10 -port 4000 -sniff
 
 # 构造并发送一个原始 IPv4 报文（前 4 字节当作端口）
 rawtest.exe send -src 172.16.0.40 -dst 172.16.0.32 -proto 200 -sport 33000 -dport 4000 -payload hello
@@ -335,16 +393,24 @@ rawtest.exe send -src 172.16.0.40 -dst 172.16.0.32 -proto 200 -sport 33000 -dpor
 
 ```bash
 bash scripts/test.sh     # 单元 + 集成（约 40 秒，含资源回收/压力用例）
-bash scripts/e2e.sh      # 端到端（需要管理员 + 两个别名地址，见下）
+sudo bash scripts/e2e.sh # 端到端（Linux/OpenBSD 需要 root 跑 RAW 用例）
 ```
 
-端到端里的 RAW 测试需要在网卡上临时加两个别名地址（客户端 / 目标各一个），脚本会自动处理：
+端到端里的 RAW 测试需要两个“本机上的不同地址”分别扮演客户端和目标：
+
+- **Linux / OpenBSD**：`127.0.0.0/8` 全是本机地址，默认直接用 `127.0.0.2`（客户端）、
+  `127.0.0.1`（监听）、`127.0.0.3`（目标），不需要配置。原始套接字用 `sudo` 跑。
+- **Windows**：回环流量不会交给 `SIO_RCVALL`，要在网卡上临时加两个别名地址，脚本会自动处理：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Add      # 添加 172.16.0.40/41
 bash scripts/e2e.sh
 powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用完清理
 ```
+
+CI 在 GitHub Actions 上跑三个平台：`windows-latest`、`ubuntu-latest`（测试与端到端用 sudo），
+以及 `vmactions/openbsd-vm` 启动的 OpenBSD 7.9 虚拟机（测试在虚拟机里以 root 执行）。
+`.github/workflows/build.yml` 会把三平台的测试、端到端、构建、发布串起来。
 
 覆盖范围（125 个测试函数 + 6 个基准，`go test -bench . ./internal/engine/` 可复现性能数字）：
 
@@ -366,10 +432,10 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
   **反复增删规则不泄漏句柄/协程**、连接数上限、畸形报文不得 panic。
 - `internal/stats`：采样器同时算出字节速率与**包速率**（含计数器回绕/重载导致的负增量保护）。
 - `internal/webui`：路由与错误码、设置项持久化（空密码不清空）、密码门控与令牌登录。
-- `test/e2e`：真实 `l4fwd.exe` + HTTP 面板 API（单条 CRUD、批量启停删、错误码）+ TCP/UDP/RAW
+- `test/e2e`：真实二进制 + HTTP 面板 API（单条 CRUD、批量启停删、错误码）+ TCP/UDP/RAW
   真实收发 + TCP 透明转发（目标在线/下线两种状态）+ 全协议规则（同一端口 TCP/UDP/自定义协议）+
   **SSH 式规则同时服务 127.0.0.1 与 ::1** + **端口冲突在面板上可见** + 热加载 +
-  **性能验收（单字节往返、写-写-读往返、32 MiB 吞吐，两种 TCP 转发形态都测）**。
+  **性能验收（单字节往返、写-写-读往返、64 MiB 吞吐，两种 TCP 转发形态都测）**。
 
 > **关于资源上限（不会造孤儿、不会把机器吃满）**：UDP 每个客户端会话要占一个上游 socket、
 > 一个协程和一个接收缓冲，RAW 每个会话还要占一个代理端口和回包映射。这类资源能被"伪造源地址/端口
@@ -383,26 +449,28 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
 > 会话空闲 `udpSessionTTLSec` 秒后连同上游 socket 一起回收，停用规则则立即回收全部（252 个监听器
 > 的「全部协议」规则实测 0.4 秒停用、1.1 秒启用）。反复增删规则不会泄漏句柄或协程（有回归测试）。
 
-> **关于 IP 分片**：实测 Windows 会在把报文交给原始套接字**之前**完成重组，所以转发侧
-> 永远是完整数据报；出方向超出 MTU 时由协议栈自动分片。代码里对分片做了兼容处理
-> （保留分片字段、只改首片校验和），但在 Windows 上实际不会走到那条分支。
+> **关于 IP 分片**：Windows 会在把报文交给原始套接字**之前**完成重组，所以转发侧
+> 永远是完整数据报；出方向超出 MTU 时由协议栈自动分片。Linux 的原始套接字会看到分片，
+> OpenBSD 也可能；代码对分片做了兼容处理（保留分片字段、按 IP ID 找到会话、只改首片校验和），
+> 两个平台都会走到那条分支。
 
 > **关于延迟**：转发不引入人为等待。两条硬约束都写进了代码与回归测试：
-> ① **Nagle 必须关闭**（`TCP_NODELAY`）—— 接受连接的 socket 由 `netutil.WinConn` 包装，普通的
-> `conn.(*net.TCPConn)` 断言对它不成立，所以 `NewWinConn` 自己关掉 Nagle，监听 socket 上也设了，
-> 新连接继承该选项；② **非阻塞读必须停在 `WSAPoll`**，不得退化成轮询忙等（曾经会让空闲连接把
-> 一个核跑满）。实测本机回环单字节往返：直连约 0.03 ms，经 TCP 转发约 0.3 ms（+0.3 ms），
-> 经透明转发约 0.35 ms；32 MiB 单向吞吐 200 MiB/s 以上。
+> ① **Nagle 必须关闭**（`TCP_NODELAY`）—— Windows 上接受连接的 socket 由 `netutil.WinConn`
+> 包装，普通的 `conn.(*net.TCPConn)` 断言对它不成立，所以 `NewWinConn` 自己关掉 Nagle，监听
+> socket 上也设了，新连接继承该选项；Linux/OpenBSD 上由 `tuneTCP` 统一设置；
+> ② **非阻塞读必须停在 `WSAPoll`**（Linux/OpenBSD 是 `poll(2)`），不得退化成轮询忙等
+> （曾经会让空闲连接把一个核跑满）。实测本机回环单字节往返：直连约 0.03 ms，经 TCP 转发约
+> 0.3 ms（+0.3 ms），经透明转发约 0.35 ms；32 MiB 单向吞吐 200 MiB/s 以上。
 
 > **关于长跑稳定性**：`WSAAccept` 的目标门控回调在**进程内只注册一次**（Go 的
 > `syscall.NewCallback` 按函数值建表，上限 2000；每个连接注册一个闭包会让程序在约 2000 次
 > 建连后直接 `fatal error: too many callback functions` 崩溃）。回调通过 `dwCallbackData`
 > 传进来的整数键在共享表里找自己的槽位。回归测试连续建连 2500 次。
 >
-> **关于并发连接（重要）**：`SO_CONDITIONAL_ACCEPT` 的回调由内核**逐个串行**执行，而回调没
-> 返回之前，后面到达的 SYN 一直不会完成握手 —— Windows 客户端大约 1 秒就放弃了。所以门控里
-> **不能**为每个连接各拨一次目标：一次 12 个并发连接会变成 12 次串行的目标建连（每次约 180 ms），
-> 前几个成功、后面全部"连接超时"。现在的做法是**门控只回答已知信息**（`targetProbe`）：
+> **关于并发连接（Windows 特有的坑）**：`SO_CONDITIONAL_ACCEPT` 的回调由内核**逐个串行**执行，
+> 而回调没返回之前，后面到达的 SYN 一直不会完成握手 —— Windows 客户端大约 1 秒就放弃了。所以
+> 门控里**不能**为每个连接各拨一次目标：一次 12 个并发连接会变成 12 次串行的目标建连（每次约
+> 180 ms），前几个成功、后面全部"连接超时"。现在的做法是**门控只回答已知信息**（`targetProbe`）：
 >
 > - 拨号在**后台协程**里进行，并把结论（成功/失败 + 拨出的那条链路）缓存 `probeTTL`；
 > - **只有一个**连接会等这次拨号，最多等 `gateBudget = 250 ms`。目标在预算内应答就如实回答：
@@ -422,7 +490,8 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
 > **关于空闲开销（「全部协议」规则尤其明显）**：一条 252 个监听器的「全部协议」规则会开
 > ~250 个原始套接字。如果每个套接字各自停在一个 `WSAPoll` 里，光是"等着"就要付出
 > **250 次系统调用 + 250 次线程唤醒**：这台机器实测空闲 6% 单核。现在同一规则的原始套接字
-> **共用一次 `WSAPoll`**（`rawPollSet`：一个协程轮询所有套接字，命中后唤醒对应的捕获协程去排空），
+> **共用一次 `WSAPoll`**（Linux/OpenBSD 上是一次 `poll(2)`，同一个 `rawPollSet` 抽象；
+> 一个协程轮询所有套接字，命中后唤醒对应的捕获协程去排空），
 > 空闲降到 **0.2%~1% 单核**，而每个协议仍然在自己的协程上处理，吞吐不受影响。实测（安静端口上
 > 的 252 监听全协议规则）：优化前 0.45~0.65 CPU 秒 / 10 秒，优化后 0.02~0.11 CPU 秒 / 10 秒。
 >
@@ -437,9 +506,10 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
 > `allocbudget_test.go` 把"热路径每包 0 次分配"写成了断言，改坏了会直接测试失败。
 
 > **关于 TCP 转发速率（重要）**：批量吞吐的瓶颈是**内核给每个连接预留的 socket 缓冲**，
-> 不是转发器自己的拷贝循环。Windows 两个方向都默认 64 KiB，转发器把数据从内核收上来、
-> 再写回内核，两个方向各一个 64 KiB 窗口，整条链路就被限制在这个窗口的周转速度上。
-> 本机回环实测（512 MiB 单流，各 6 轮取中位数）：
+> 不是转发器自己的拷贝循环。三个平台的默认值都不大（Windows 64 KiB；Linux 约 128 KiB 且受
+> `net.core.rmem_max` 限制；OpenBSD 32 KiB 左右），转发器把数据从内核收上来、再写回内核，
+> 两个方向各一个窗口，整条链路就被限制在这个窗口的周转速度上。
+> Windows 本机回环实测（512 MiB 单流，各 6 轮取中位数）：
 
 | 路径 | 默认 64 KiB 缓冲 | `listenBufferKB: 1024` |
 |---|---|---|
@@ -447,19 +517,22 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
 | 经 TCP 转发 | 436 MiB/s | **514 MiB/s** |
 | 经透明转发（门控） | **247 MiB/s** | **493 MiB/s** |
 
-> 所以 `listenBufferKB` 现在是**默认 1 MiB**，加在监听套接字上——Windows 会把监听套接字的
-> 收发缓冲**继承给 accept 出来的连接**（有回归测试 `TestListenerBuffersAreInherited` 钉住这一点），
-> 所以不需要每个连接再 setsockopt。透明转发路径受益最大（+100%），因为门控监听比普通监听
+> 所以 `listenBufferKB` 现在是**默认 1 MiB**。Windows 上它设在监听套接字上，监听套接字的
+> 收发缓冲会**继承给 accept 出来的连接**（有回归测试 `TestListenerBuffersAreInherited` 钉住这一点）；
+> Linux/OpenBSD 不继承，`tuneTCP` 在 accept 之后对每个连接单独 setsockopt（Linux 上 root 还会尝试
+> `SO_RCVBUFFORCE` 突破 `rmem_max`）。透明转发路径受益最大（+100%），因为门控监听比普通监听
 > 更容易在握手后暴露这个窗口。转发器自身的 CPU 大约是一个核的 50~60%，其中 85% 是内核态拷贝。
 >
 > 客户端侧在透明路径上由 `WinConn` 驱动，现在是**先收后等**：`WSARecv` 先试一次，只有队列空
 > （`WSAEWOULDBLOCK`）才停到 `WSAPoll` 上。转发器的对端通常已经有数据在排队，所以绝大多数读都
-> 省掉了那次 poll。
+> 省掉了那次 poll。Linux/OpenBSD 走 Go runtime 的 epoll/kqueue，同样是先收后等。
 >
-> 参照数据（本机回环，同一台机器）：Linux 内核态方案在这里没有对应物——Windows 自带的
-> `netsh interface portproxy`（内核态转发）实测只有 **55~63 MiB/s**，不到这个转发器的九分之一；
-> 一个"照抄 nginx 参数"的最小 Go 转发器（大缓冲 + 非阻塞读 + 回环快通道）实测 380~440 MiB/s。
-> 也就是说现在的数字已经贴着这台机器用户态转发的上限，再往上要换掉整条数据通路。
+> 参照数据（Windows 本机回环，同一台机器）：Windows 自带的 `netsh interface portproxy`（内核态
+> 转发）实测只有 **55~63 MiB/s**，不到这个转发器的九分之一；一个"照抄 nginx 参数"的最小 Go
+> 转发器（大缓冲 + 非阻塞读 + 回环快通道）实测 380~440 MiB/s。也就是说现在的数字已经贴着这台机器
+> 用户态转发的上限，再往上要换掉整条数据通路。Linux/OpenBSD 的数字由 CI 的
+> `TestTCPStreamThroughput` 每次构建复测（断言只要求转发 ≥ 直连的 1/5、透明 ≥ 普通转发的 60%，
+> 避免共享 runner 的抖动误报）。
 
 ---
 
@@ -467,22 +540,25 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
 
 | 现象 | 原因与处理 |
 |---|---|
-| 日志出现 `需要管理员权限`、RAW 规则启动失败 | 用 `l4fwd-admin.exe` 或右键以管理员身份运行 |
+| 日志出现 `需要管理员权限` / `需要 root`、RAW 规则启动失败 | Windows 用 `l4fwd-admin.exe` 或右键以管理员身份运行；Linux 用 `sudo` 或 `setcap cap_net_raw+ep`；OpenBSD 用 `sudo` |
 | **SSH 转发失败 / 提示 Connection refused** | 两个常见原因：① 客户端用 `ssh localhost`，而 localhost 在 Windows 上优先解析成 `::1`（sshd/OpenSSH 客户端不会回退到 127.0.0.1）。l4fwd 现在是**双栈监听**（同时出现在 `0.0.0.0` 和 `[::]`），如果日志里只看到 IPv4 监听，说明用了旧版本；② 目标那侧没有 SSH 服务或端口不对，转发器日志会写 `dial ... failed`。 |
-| 规则一直「运行中」但客户端连不上 | 用 `netstat -ano \\| findstr <端口>` 确认 l4fwd 真的在监听；如果端口被别的程序占着，日志会明确报 `端口 N 已被其它程序占用`，面板的状态列也会显示错误。 |
-| RAW 规则报 `SIO_RCVALL requires binding to a specific local IP` | 监听地址填了 `0.0.0.0`；改成具体网卡 IP（面板输入框有下拉候选） |
+| 规则一直「运行中」但客户端连不上 | Windows 用 `netstat -ano \| findstr <端口>`，Linux/OpenBSD 用 `ss -ltnp` / `netstat -an` 确认 l4fwd 真的在监听；如果端口被别的程序占着，日志会明确报 `端口 N 已被其它程序占用`，面板的状态列也会显示错误。 |
+| Windows RAW 规则报 `SIO_RCVALL requires binding to a specific local IP` | 监听地址填了 `0.0.0.0`；改成具体网卡 IP（面板输入框有下拉候选）。Linux/OpenBSD 没有这个限制 |
 | RAW 规则的监听地址必须是 IPv4 | 原始套接字工作在第 3 层，只支持 IPv4 地址；TCP/UDP 规则则支持 IPv6 监听地址 |
-| 面板打不开 | 检查 `web.listen` 端口是否被占用，或启动时加了 `-web off` |
+| 面板打不开 | 检查 `web.listen` 端口是否被占用，或启动时加了 `-web off`；Linux/OpenBSD 用 `-no-browser` 时不会自动开浏览器 |
+| Linux 上 RAW 规则报 `operation not permitted` | 进程没有 root/CAP_NET_RAW；用 `sudo`，或 `sudo setcap cap_net_raw+ep ./l4fwd` 后普通用户运行 |
+| OpenBSD 上混杂捕获报 `open /dev/bpf` | `/dev/bpf` 只有 root 可开，且内核要启用 bpf；用 `sudo` 启动 |
 | 目标回包到不了客户端 | 确认目标的回包是发往本机（l4fwd 的源地址）；必要时在规则里指定 `sourceIP` |
 | UDP 大报文丢包 | 提高 `bufferKB`，并检查中间设备 MTU |
 | 全协议规则建了第二条被拒绝 | 「全部协议」按主机独占全部协议号，同一台机器一条就够 |
 | 日志出现某个协议号 `部分启动失败` | 该协议号被系统占用或驱动不支持，其余协议不受影响 |
-| 想抓包确认 | 用 `rawtest.exe observe`，或 Wireshark 按 `ip.proto == 200` 过滤 |
+| 想抓包确认 | 用 `rawtest observe -sniff`，或 Wireshark 按 `ip.proto == 200` 过滤 |
 | 感觉"延迟比两段加起来还高" | 转发路径本身不加等待（本机回环单字节往返 +0.3 ms 左右）。真正的延迟来自三个可配置项：`dialTimeoutSec` 只影响建连失败判定，不影响成功路径；`idleTimeoutSec` 非 0 时会在读上设截止时间，长静默连接会被断开；如果客户端自身的协议是"小包一问一答"，确认没有别的中间设备开着实时代理。用 `bash scripts/e2e.sh -run TestTCPLatency` 可复现基线数字。 |
-| **并发连接一部分"连接超时"，单独连却正常** | 这是门控回调被串行执行的表现（见上面「关于并发连接」）。现在的版本把一次目标探测的结论共用，并给门控设了 250 ms 预算：目标比预算慢就直接放行。20~30 个并发连接实测全部成功；如果还看到超时，请确认用的是最新构建。 |
+| **并发连接一部分"连接超时"，单独连却正常**（Windows） | 这是门控回调被串行执行的表现（见上面「关于并发连接」）。现在的版本把一次目标探测的结论共用，并给门控设了 250 ms 预算：目标比预算慢就直接放行。20~30 个并发连接实测全部成功；如果还看到超时，请确认用的是最新构建。 |
 | 规则启动时报「端口 N 已被其它程序占用」 | 通配监听会在绑定前探测 IPv4 侧（否则双栈绑定会成功，但连接被两个套接字瓜分）。关掉占用该端口的程序，或换端口。 |
-| 连接建立要等 200 ms 以上 | 这是**到目标的实际建连时间**（透明转发在握手期间就要连上目标，否则无法如实回答探测）。本机目标应该是毫秒级；若是公网目标，这个数字等于这条路径的 RTT。超过 250 ms 不会一直等：门控会先放行，之后由这条连接自己拨号。 |
-| 任务管理器里句柄数偏高 | 全协议规则会持有 ~250 个原始套接字，属正常；反复增删规则后若不回落才需排查（测试已覆盖） |
+| 连接建立要等 200 ms 以上（Windows） | 这是**到目标的实际建连时间**（透明转发在握手期间就要连上目标，否则无法如实回答探测）。本机目标应该是毫秒级；若是公网目标，这个数字等于这条路径的 RTT。超过 250 ms 不会一直等：门控会先放行，之后由这条连接自己拨号。 |
+| Linux/OpenBSD 上 tcping 目标已下线仍显示"连上" | 内核在 accept 前就完成了握手，用户态无法阻止；转发器会立刻 RST，读写会失败。只做 connect 的探测在两个平台上无法如实反映目标状态，见「平台支持」 |
+| 句柄/文件描述符数偏高 | 全协议规则会持有 ~250 个原始套接字，属正常；反复增删规则后若不回落才需排查（测试已覆盖） |
 
 ---
 
@@ -492,17 +568,28 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove   # 用
 cmd/l4fwd/            程序入口与命令行解析
 internal/cli/         启动流程：配置、日志、引擎、面板、信号、热加载
 internal/config/      config.json 结构与校验、原子保存、冲突检测
-internal/engine/      TCP / UDP / RAW(own) 转发实现 + TCP 透明转发 + 规则管理器
-internal/netutil/     IPv4 头与校验和、协议解析、Windows 原始套接字与门控监听封装
+internal/engine/      TCP / UDP / RAW(own) 转发实现 + TCP 透明转发 + 规则管理器 + 共享 poll
+internal/netutil/     IPv4 头与校验和、协议解析、原始套接字（各平台一套）、门控监听、套接字缓冲
+internal/platform/    提权检测/提权重启、防火墙（Windows 实现，其它平台明确降级）、单实例、开浏览器
 internal/logx/        带内存环形缓冲与订阅的日志器（面板实时日志用）
 internal/stats/       计数器与速率采样
 internal/webui/       内嵌网页面板（HTML + JSON API + SSE，含批量操作接口）
-internal/winutil/     管理员检测/提权、防火墙规则、单实例、打开浏览器
-build/                manifest（普通版/管理员版）与资源嵌入工具
-tools/rawtest/        原始套接字抓包/发包测试工具
+build/                manifest（普通版/管理员版）与资源嵌入工具（仅 Windows）
+tools/rawtest/        原始套接字抓包/发包测试工具（三平台）
 scripts/              构建、测试、端到端脚本
-test/e2e/             端到端测试
+test/e2e/             端到端测试（共享用例 + Windows/Unix 两套 raw 端）
 ```
+
+netutil 的平台文件：
+
+| 文件 | 平台 | 内容 |
+|---|---|---|
+| `rawsock_windows.go` / `gatedlisten_windows.go` | Windows | `WSASocket` / `IP_HDRINCL` / `SIO_RCVALL` / `WSAPoll`，`SO_CONDITIONAL_ACCEPT` 门控 |
+| `rawsock_unix.go` | Linux + OpenBSD | `AF_INET SOCK_RAW` + `IP_HDRINCL`，非阻塞 + `poll(2)` |
+| `rawsock_sniff_linux.go` | Linux | `AF_PACKET` + 内核 BPF 过滤器 |
+| `rawsock_sniff_openbsd.go` | OpenBSD | `/dev/bpf`（`BIOCSETIF`/`BIOCPROMISC`/`BIOCIMMEDIATE`） |
+| `gatedlisten_other.go` | Linux + OpenBSD | accept 之后执行门控，失败用 `SO_LINGER=0` 发 RST |
+| `sockbuf_linux.go` | Linux | `SO_*BUFFORCE` 优先，突破 `net.core.rmem_max` |
 
 ---
 

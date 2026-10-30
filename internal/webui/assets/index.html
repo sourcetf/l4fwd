@@ -495,9 +495,18 @@ async function reload(){
 
 // renderFirewall warns when a listening port is not allowed through the Windows
 // firewall, which is the usual reason a forwarder looks like it does nothing for
-// clients on other machines while loopback still works.
+// clients on other machines while loopback still works. Linux and OpenBSD manage
+// their packet filter themselves, so the whole feature is hidden there.
 function renderFirewall(fw){
   const box = $('#fwWarn');
+  const btn = $('#btnFirewall');
+  if(fw && fw.supported === false){
+    if(btn) btn.style.display = 'none';
+    box.className = 'notice';
+    box.innerHTML = '';
+    return;
+  }
+  if(btn) btn.style.display = '';
   if(!fw || fw.error || !fw.missing || fw.missing.length === 0){
     box.className = 'notice';
     box.innerHTML = '';

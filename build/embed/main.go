@@ -1,3 +1,5 @@
+//go:build windows
+
 // Command l4fwd-embed writes a Win32 application manifest and version resource
 // into an already built l4fwd.exe.
 //

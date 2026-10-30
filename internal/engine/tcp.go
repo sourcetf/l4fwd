@@ -110,11 +110,7 @@ func (t *TCPListener) acceptLoop() {
 
 func (t *TCPListener) handle(client net.Conn) {
 	defer client.Close()
-	if tc, ok := client.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(30 * time.Second)
-	}
+	tuneTCP(client, t.set.ListenerBufferKB())
 	t.track(client)
 	defer t.untrack(client)
 
@@ -140,11 +136,7 @@ func (t *TCPListener) handle(client net.Conn) {
 	}
 	t.track(upstream)
 	defer t.untrack(upstream)
-	if tc, ok := upstream.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(30 * time.Second)
-	}
+	tuneTCP(upstream, t.set.ListenerBufferKB())
 	t.log.Debugf("tcp", "%s -> %s connected", clientAddr, target)
 	relayPair(client, upstream, t.rule.IdleTimeout(t.set), t.stats)
 	t.log.Debugf("tcp", "%s -> %s closed", clientAddr, target)

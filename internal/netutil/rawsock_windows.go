@@ -291,6 +291,17 @@ func isTimeout(err error) bool {
 // WouldBlock reports whether err indicates a temporarily empty receive queue.
 func WouldBlock(err error) bool { return errors.Is(err, errWouldBlock) }
 
+// ReceivePacket is Receive with a slice result, so the relay's hot path can use
+// the captured bytes in place. Windows raw sockets deliver the IP packet at the
+// start of the buffer, so the slice is just buf[:n].
+func (r *RawSock) ReceivePacket(buf []byte) ([]byte, error) {
+	n, err := r.Receive(buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
 // RawCaptureLoop reads packets until stop is closed, invoking fn for each.
 // It blocks in WSAPoll between packets so an idle socket costs no CPU.
 func (r *RawSock) RawCaptureLoop(buf []byte, stop <-chan struct{}, fn func(pkt []byte) error) error {

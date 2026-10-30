@@ -611,8 +611,20 @@ func TestTransparentTCPListenerRefusesWhenTargetDown(t *testing.T) {
 	start := time.Now()
 	c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", listenPort), 3*time.Second)
 	if err == nil {
+		// Linux and OpenBSD complete the handshake in the kernel before accept()
+		// runs, so the connect itself succeeds; the gate then resets the
+		// connection, which the client sees on the first write or read.
+		_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+		_, werr := c.Write([]byte("probe"))
+		var rerr error
+		if werr == nil {
+			buf := make([]byte, 1)
+			_, rerr = c.Read(buf)
+		}
 		_ = c.Close()
-		t.Fatal("connect must not succeed while the target is unreachable")
+		if werr == nil && rerr == nil {
+			t.Fatal("connection kept working while the target was unreachable")
+		}
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("refusal took %v", elapsed)

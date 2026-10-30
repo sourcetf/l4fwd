@@ -11,10 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"l4fwd/internal/netutil"
 	"l4fwd/internal/stats"
 )
 
-// defaultBufferSize matches the largest useful Windows socket read and keeps
+// defaultBufferSize matches the largest useful socket read and keeps
 // allocations out of the hot path.
 const defaultBufferSize = 64 * 1024
 
@@ -27,6 +28,30 @@ var bufferPool = sync.Pool{
 
 func getBuffer() *[]byte  { return bufferPool.Get().(*[]byte) }
 func putBuffer(b *[]byte) { bufferPool.Put(b) }
+
+// tuneTCP applies the options every relayed connection needs: Nagle off (a relay
+// must never hold a small write back), keepalive on (an abandoned connection is
+// reaped by the kernel), and kernel buffers sized so a bulk transfer is not
+// limited by the platform default.
+//
+// The tuning is interface based rather than a *net.TCPConn assertion because the
+// gated listener wraps accepted sockets in its own connection type.
+func tuneTCP(c net.Conn, bufferKB int) {
+	if c == nil {
+		return
+	}
+	type tuner interface {
+		SetNoDelay(bool) error
+		SetKeepAlive(bool) error
+		SetKeepAlivePeriod(time.Duration) error
+	}
+	if t, ok := c.(tuner); ok {
+		_ = t.SetNoDelay(true)
+		_ = t.SetKeepAlive(true)
+		_ = t.SetKeepAlivePeriod(30 * time.Second)
+	}
+	netutil.ApplyConnBuffers(c, bufferKB)
+}
 
 // halfCloser is implemented by *net.TCPConn.
 type halfCloser interface {

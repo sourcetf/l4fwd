@@ -18,8 +18,8 @@ import (
 	"l4fwd/internal/config"
 	"l4fwd/internal/engine"
 	"l4fwd/internal/logx"
+	"l4fwd/internal/platform"
 	"l4fwd/internal/version"
-	"l4fwd/internal/winutil"
 )
 
 //go:embed assets/*
@@ -521,9 +521,15 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "firewall":
-		if !winutil.IsElevated() {
+		if !platform.FirewallSupported() {
+			writeJSON(w, http.StatusNotImplemented, map[string]any{
+				"error": "自动放行防火墙仅支持 Windows；本系统请手动放行规则端口",
+			})
+			return
+		}
+		if !platform.IsElevated() {
 			writeJSON(w, http.StatusForbidden, map[string]any{
-				"error": "添加防火墙规则需要管理员权限：请用 l4fwd-admin.exe，或右键以管理员身份运行后重试",
+				"error": "添加防火墙规则需要 " + platform.PrivilegeHint() + "：请用管理员身份重新启动后重试",
 			})
 			return
 		}

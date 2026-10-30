@@ -1,6 +1,6 @@
 name: build
 
-# 测试 → 构建 → 端到端 → 发布。
+# 测试 → 构建 → 端到端 → 发布，三个平台一起跑。
 #
 # 触发与行为：
 #   push 到 master/main    → 测试、构建、端到端，更新 "latest" 预发布（跟随最新提交）
@@ -8,8 +8,12 @@ name: build
 #   pull_request           → 只跑测试与端到端（不发布）
 #   手动 workflow_dispatch → 同 master
 #
-# l4fwd 是 Windows 专用工具（原始套接字、SIO_RCVALL 混杂捕获、双栈门控监听、防火墙
-# 管理都走 Win32 API），所以测试/构建/端到端都在 windows runner 上跑；发布用 ubuntu。
+# 平台：
+#   Windows  windows-latest          原始套接字（SIO_RCVALL）、UAC 清单、netsh 防火墙
+#   Linux    ubuntu-latest           原始套接字（AF_PACKET）、nft/ufw 手动放行
+#   OpenBSD  vmactions/openbsd-vm    /dev/bpf 混杂捕获；测试在虚拟机里以 root 跑
+#
+# 原始套接字需要特权：Linux 上的测试与端到端用 sudo 执行；OpenBSD 虚拟机里默认就是 root。
 
 on:
   push:
@@ -27,11 +31,16 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1) 测试门禁：go vet、gofmt、单元 + 集成测试（真实 TCP/UDP 收发）。
+  # 1) 测试门禁：go vet、gofmt、单元 + 集成测试（真实 TCP/UDP/RAW 收发）。
   # ---------------------------------------------------------------------------
   test:
-    name: 测试
-    runs-on: windows-latest
+    name: 测试 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -56,25 +65,81 @@ jobs:
 
       - name: 单元 + 集成测试
         shell: bash
-        run: go test ./internal/... -count=1 -timeout 900s
+        # Linux 的原始套接字用例需要 root/CAP_NET_RAW，用 sudo 跑；GOCACHE 换到
+        # /tmp，免得 root 在 runner 的缓存目录里留下读不了的文件。
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo env PATH="$PATH" GOCACHE=/tmp/gocache-root GOMODCACHE="$GOMODCACHE" \
+              GOPROXY="$GOPROXY" GOFLAGS="$GOFLAGS" \
+              go test ./internal/... -count=1 -timeout 900s
+          else
+            go test ./internal/... -count=1 -timeout 900s
+          fi
 
       - name: 覆盖率
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
+        # 覆盖率步骤以普通用户跑：需要特权的原始套接字用例会自行跳过，
+        # 协议解析、会话表、校验和等纯逻辑仍然计入覆盖率。
         run: go test ./internal/... -count=1 -coverprofile=coverage.out -covermode=atomic
 
       - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
         with:
           name: coverage
           path: coverage.out
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # 2) 构建：两个清单版本的 exe + 原始套接字测试工具，打包并上传。
+  # 1b) OpenBSD：在 Linux runner 上启动 OpenBSD 虚拟机，用官方 Go tarball 跑测试。
+  # ---------------------------------------------------------------------------
+  test-openbsd:
+    name: 测试 (openbsd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: OpenBSD 虚拟机里跑 vet / gofmt / 测试
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: '7.9'
+          usesh: true
+          # OpenBSD 自带的 ftp 支持 HTTPS，不需要先装 curl。
+          prepare: |
+            ftp -o /tmp/go.tgz https://go.dev/dl/go1.26.0.openbsd-amd64.tar.gz
+            tar -C /usr/local -xzf /tmp/go.tgz
+          run: |
+            set -e
+            export PATH=/usr/local/go/bin:$PATH
+            go version
+            go vet ./...
+            unformatted="$(gofmt -l ./cmd ./internal ./test ./build ./tools)"
+            if [ -n "$unformatted" ]; then
+              echo "以下文件未通过 gofmt："
+              echo "$unformatted"
+              exit 1
+            fi
+            go test ./internal/... -count=1 -timeout 900s
+
+  # ---------------------------------------------------------------------------
+  # 2) 构建三个平台的发布产物。
   # ---------------------------------------------------------------------------
   build:
-    name: 构建
+    name: 构建 (${{ matrix.target }})
     needs: test
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows
+          - os: ubuntu-latest
+            target: linux
+          - os: ubuntu-latest
+            target: openbsd
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,48 +162,61 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "版本号：$v"
 
-      - name: 构建（嵌入清单与版本资源）
+      - name: 构建
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          TARGET_OS: ${{ matrix.target }}
         run: bash scripts/build.sh
-
-      - name: 计算校验和
-        shell: bash
-        run: |
-          cd bin
-          sha256sum l4fwd.exe l4fwd-admin.exe rawtest.exe > SHA256SUMS.txt
-          cat SHA256SUMS.txt
 
       - name: 整理产物
         shell: bash
-        # 这里不做 zip：PowerShell 的 Compress-Archive 会把路径写成反斜杠，
-        # Linux 上的 unzip 拒绝解压（实测），而产物本来就是要单独上传到
-        # Release 的文件。打包交给发布任务用 zip 完成。
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
+          set -euo pipefail
           mkdir -p dist
-          cp bin/l4fwd.exe bin/l4fwd-admin.exe bin/rawtest.exe bin/SHA256SUMS.txt dist/
-          cp README.md LICENSE config.example.json dist/
+          if [ "$TARGET" = "windows" ]; then
+            cp bin/l4fwd.exe bin/l4fwd-admin.exe bin/rawtest.exe dist/
+          elif [ "$TARGET" = "linux" ]; then
+            cp bin/l4fwd dist/l4fwd-linux-amd64
+            [ -f bin/rawtest ] && cp bin/rawtest dist/rawtest-linux-amd64
+          else
+            cp bin/l4fwd-openbsd-amd64 dist/l4fwd-openbsd-amd64
+            [ -f bin/rawtest-openbsd-amd64 ] && cp bin/rawtest-openbsd-amd64 dist/rawtest-openbsd-amd64
+          fi
+          ( cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
           ls -la dist/
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: l4fwd-windows-amd64
+          name: l4fwd-${{ matrix.target }}-amd64
           path: dist/*
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 3) 端到端：用刚构建出来的 exe 跑真实报文测试。
+  # 3) 端到端：用刚构建出来的二进制跑真实报文测试。
   #
-  #    先在本机网卡上临时加两个别名地址（客户端 172.16.0.40 / 目标 172.16.0.41），
-  #    RAW 协议号与混杂捕获的用例需要它们；监听地址用 runner 自己的主地址。
-  #    这一步跑的是发布用的那个二进制，所以"能发布"就意味着"真的转发过"。
+  #    Windows：在本机网卡上临时加两个别名地址（客户端 172.16.0.40 / 目标
+  #    172.16.0.41），RAW 与混杂捕获用例需要它们；回环流量不会交给 SIO_RCVALL。
+  #    Linux/OpenBSD：127.0.0.0/8 全部是本机地址，默认用 127.0.0.2/127.0.0.3，
+  #    原始套接字在 sudo / root 下运行。
   # ---------------------------------------------------------------------------
   e2e:
-    name: 端到端
+    name: 端到端 (${{ matrix.target }})
     needs: build
-    runs-on: windows-latest
+    if: needs.build.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows
+          - os: ubuntu-latest
+            target: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -149,24 +227,27 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: l4fwd-windows-amd64
+          name: l4fwd-${{ matrix.target }}-amd64
           path: dist
 
       - name: 解出二进制
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           mkdir -p bin
-          cp dist/l4fwd.exe dist/rawtest.exe bin/
+          if [ "$TARGET" = "windows" ]; then
+            cp dist/l4fwd.exe dist/rawtest.exe bin/
+          else
+            cp dist/l4fwd-linux-amd64 bin/l4fwd
+            chmod +x bin/l4fwd
+          fi
           ls -la bin/
 
+      # ---- Windows: 别名地址（失败时 RAW 用例自动跳过，其余照常） ----
       - name: 配置别名地址并选择监听地址
+        if: matrix.target == 'windows'
         shell: pwsh
-        # 加地址需要管理员权限。GitHub 托管的 Windows runner 通常可以，但这不是
-        # 我们能控制的：失败时后面的端到端测试会自动跳过需要别名地址的 RAW 用例，
-        # 其余用例照常执行，所以这一步不让整条流水线变红。
-        #
-        # 超时是必需的：New-NetIPAddress 在受限的 runner 上可能长时间不返回，
-        # 实测这一步曾把整条流水线挂住一个多小时（最后只能强制取消）。
         timeout-minutes: 3
         continue-on-error: true
         run: |
@@ -176,30 +257,69 @@ jobs:
             Sort-Object -Property SkipAsSource | Select-Object -First 1
           if (-not $primary) { throw "找不到可用的 IPv4 主地址" }
           Write-Host "监听地址使用 $($primary.IPAddress)（网卡 $($primary.InterfaceAlias)）"
-          # 用 ASCII 写 GITHUB_ENV：PowerShell 5.1 的 -Encoding utf8 会带 BOM，
-          # 那会被当成值的一部分，导致地址解析失败。
           "L4FWD_E2E_LISTEN=$($primary.IPAddress)" |
             Out-File -Append -Encoding ascii $env:GITHUB_ENV
-          # 别名地址加在真实网卡上。回环地址（127.0.0.x）虽然可以直接绑定，但
-          # Windows 不会把回环流量交给 SIO_RCVALL，原始套接字用例在那边抓不到包
-          # （实测），所以不能用回环代替。
           powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Add -InterfaceName "$($primary.InterfaceAlias)"
 
-      - name: 端到端测试
+      - name: 端到端测试 (Windows)
+        if: matrix.target == 'windows'
         shell: bash
         env:
           L4FWD_BIN: ${{ github.workspace }}\bin\l4fwd.exe
           L4FWD_E2E_CLIENT: 172.16.0.40
           L4FWD_E2E_TARGET: 172.16.0.41
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: bash scripts/e2e.sh
 
       - name: 清理别名地址
-        if: always()
+        if: always() && matrix.target == 'windows'
         shell: pwsh
         timeout-minutes: 2
         continue-on-error: true
         run: powershell -ExecutionPolicy Bypass -File scripts/e2e-aliases.ps1 -Remove
+
+      - name: 端到端测试 (Linux)
+        if: matrix.target == 'linux'
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          sudo env PATH="$PATH" GOCACHE=/tmp/gocache-root GOMODCACHE="$GOMODCACHE" \
+            GOPROXY="$GOPROXY" GOFLAGS="$GOFLAGS" L4FWD_BIN="$PWD/bin/l4fwd" \
+            bash scripts/e2e.sh
+
+  # ---------------------------------------------------------------------------
+  # 3b) OpenBSD 端到端：用交叉编译出来的二进制，在虚拟机里跑真实报文测试。
+  # ---------------------------------------------------------------------------
+  e2e-openbsd:
+    name: 端到端 (openbsd)
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: l4fwd-openbsd-amd64
+          path: dist
+
+      - name: OpenBSD 虚拟机里跑端到端
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: '7.9'
+          usesh: true
+          prepare: |
+            ftp -o /tmp/go.tgz https://go.dev/dl/go1.26.0.openbsd-amd64.tar.gz
+            tar -C /usr/local -xzf /tmp/go.tgz
+          run: |
+            set -e
+            export PATH=/usr/local/go/bin:$PATH
+            cp dist/l4fwd-openbsd-amd64 bin/l4fwd-openbsd-amd64
+            chmod +x bin/l4fwd-openbsd-amd64
+            L4FWD_BIN="$PWD/bin/l4fwd-openbsd-amd64" \
+              L4FWD_E2E_CLIENT=127.0.0.2 L4FWD_E2E_LISTEN=127.0.0.1 L4FWD_E2E_TARGET=127.0.0.3 \
+              go test ./test/e2e/ -count=1 -timeout 900s -v
 
   # ---------------------------------------------------------------------------
   # 4) 发布：
@@ -208,26 +328,33 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: 发布
-    needs: [build, e2e]
-    if: github.event_name != 'pull_request'
+    needs: [build, e2e, e2e-openbsd]
+    if: github.event_name != 'pull_request' && needs.e2e.result == 'success' && needs.e2e-openbsd.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - name: 下载三平台产物
+        uses: actions/download-artifact@v4
         with:
-          name: l4fwd-windows-amd64
-          path: dist
+          path: artifacts
 
       - name: 整理资产
         run: |
           set -euo pipefail
+          ls -la artifacts
+          mkdir -p dist
+          cp artifacts/l4fwd-windows-amd64/* dist/
+          cp artifacts/l4fwd-linux-amd64/* dist/
+          cp artifacts/l4fwd-openbsd-amd64/* dist/
+          # 每个平台各有一份 SHA256SUMS.txt，合并成一份（文件名互不重叠）。
+          cat artifacts/*/SHA256SUMS.txt > dist/SHA256SUMS.txt
+          cp README.md LICENSE config.example.json dist/
           ls -la dist
-          missing=0
-          for f in l4fwd.exe l4fwd-admin.exe rawtest.exe SHA256SUMS.txt; do
-            [ -f "dist/$f" ] || { echo "缺少资产 $f" >&2; missing=1; }
+          for f in l4fwd.exe l4fwd-admin.exe l4fwd-linux-amd64 l4fwd-openbsd-amd64; do
+            [ -f "dist/$f" ] || { echo "缺少资产 $f" >&2; exit 1; }
           done
-          [ "$missing" -eq 0 ] || exit 1
 
       - name: 发布 / 更新
         env:
@@ -241,67 +368,56 @@ jobs:
           if [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
             TITLE="l4fwd ${REF_NAME#v}"
-            NOTES=$(cat <<EOF
-          Windows 四层 / 原始套接字端口转发工具 ${REF_NAME#v}。
-
-          资产：
-          - l4fwd.exe：普通版（不弹 UAC），TCP/UDP 转发开箱可用
-          - l4fwd-admin.exe：全功能版（启动弹 UAC），额外支持 RAW 原始套接字与混杂捕获
-          - rawtest.exe：原始套接字抓包 / 发包测试工具
-          - SHA256SUMS.txt：校验和
-
-          构建于提交 ${SHA:0:7}，已通过单元/集成测试与端到端测试。
-          EOF
-          )
             CHANNEL_FLAG="--latest"
           else
             TAG="latest"
             TITLE="latest（跟随 master 最新构建）"
-            NOTES=$(cat <<EOF
-          master 分支最新构建，提交 ${SHA:0:7}。
-
-          这是滚动预发布，每次 master 有新提交都会覆盖更新；正式版本见 v* 标签的 Release。
-
-          资产：
-          - l4fwd.exe：普通版（不弹 UAC），TCP/UDP 转发开箱可用
-          - l4fwd-admin.exe：全功能版（启动弹 UAC），额外支持 RAW 原始套接字与混杂捕获
-          - rawtest.exe：原始套接字抓包 / 发包测试工具
-          - SHA256SUMS.txt：校验和
-          EOF
-          )
             CHANNEL_FLAG="--prerelease --latest=false"
           fi
 
-          # 再压缩一份整包，方便用户一次下载全部文件（用 Linux 的 zip 而不是
-          # PowerShell 的 Compress-Archive，后者会写成反斜杠路径条目，
-          # 在 Linux/macOS 上解压会失败）。
-          BUNDLE="l4fwd-${TAG}-windows-amd64.zip"
-          if command -v zip >/dev/null 2>&1; then
-            zip -j "$BUNDLE" dist/l4fwd.exe dist/l4fwd-admin.exe dist/rawtest.exe \
-              dist/SHA256SUMS.txt dist/README.md dist/LICENSE dist/config.example.json
-          else
-            python3 -m zipfile -c "$BUNDLE" \
-              dist/l4fwd.exe dist/l4fwd-admin.exe dist/rawtest.exe \
-              dist/SHA256SUMS.txt dist/README.md dist/LICENSE dist/config.example.json
-          fi
-          ls -la "$BUNDLE"
+          cat > NOTES.md <<EOF
+          l4fwd 四层 / 原始套接字端口转发工具 ${TAG#v}（Windows / Linux / OpenBSD）。
+
+          三平台均已通过单元测试与端到端测试（GitHub Actions：windows-latest、
+          ubuntu-latest、OpenBSD 7.9 虚拟机）。
+
+          资产：
+          - l4fwd-<tag>-windows-amd64.zip：l4fwd.exe（不弹 UAC）、l4fwd-admin.exe（UAC，
+            额外支持 RAW / 混杂捕获 / 防火墙放行）、rawtest.exe
+          - l4fwd-<tag>-linux-amd64.tar.gz：l4fwd、rawtest（RAW 需要 root 或 CAP_NET_RAW）
+          - l4fwd-<tag>-openbsd-amd64.tar.gz：l4fwd、rawtest（RAW 与 /dev/bpf 需要 root）
+          - SHA256SUMS.txt：校验和
+
+          构建于提交 ${SHA:0:7}。
+          EOF
+
+          # 打包用 Linux 的 tar/zip：PowerShell 的 Compress-Archive 会写成反斜杠路径。
+          zip -j "l4fwd-${TAG}-windows-amd64.zip" \
+            dist/l4fwd.exe dist/l4fwd-admin.exe dist/rawtest.exe dist/README.md dist/LICENSE dist/config.example.json
+          tar -czf "l4fwd-${TAG}-linux-amd64.tar.gz" -C dist \
+            l4fwd-linux-amd64 rawtest-linux-amd64 README.md LICENSE config.example.json
+          tar -czf "l4fwd-${TAG}-openbsd-amd64.tar.gz" -C dist \
+            l4fwd-openbsd-amd64 rawtest-openbsd-amd64 README.md LICENSE config.example.json
 
           assets=(
             dist/l4fwd.exe
             dist/l4fwd-admin.exe
-            dist/rawtest.exe
+            dist/l4fwd-linux-amd64
+            dist/l4fwd-openbsd-amd64
             dist/SHA256SUMS.txt
-            "$BUNDLE"
+            "l4fwd-${TAG}-windows-amd64.zip"
+            "l4fwd-${TAG}-linux-amd64.tar.gz"
+            "l4fwd-${TAG}-openbsd-amd64.tar.gz"
           )
           printf '资产：%s\n' "${assets[@]}"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG 已存在，覆盖更新资产"
             gh release upload "$TAG" "${assets[@]}" --clobber
-            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" $CHANNEL_FLAG
+            gh release edit "$TAG" --title "$TITLE" --notes-file NOTES.md $CHANNEL_FLAG
           else
             echo "创建 Release $TAG"
-            gh release create "$TAG" "${assets[@]}" --title "$TITLE" --notes "$NOTES" $CHANNEL_FLAG
+            gh release create "$TAG" "${assets[@]}" --title "$TITLE" --notes-file NOTES.md $CHANNEL_FLAG
           fi
 
           gh release view "$TAG"

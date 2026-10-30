@@ -11,8 +11,8 @@ import (
 	"l4fwd/internal/config"
 	"l4fwd/internal/engine"
 	"l4fwd/internal/logx"
+	"l4fwd/internal/platform"
 	"l4fwd/internal/stats"
-	"l4fwd/internal/winutil"
 )
 
 // newTestServer builds a dashboard backed by a temporary config.
@@ -214,7 +214,7 @@ func TestDashboardFirewallEndpoints(t *testing.T) {
 	origEnsure := ensureFirewallRule
 	t.Cleanup(func() { ensureFirewallRule = origEnsure })
 	applied := map[string]bool{}
-	ensureFirewallRule = func(r winutil.FirewallRule) (bool, error) {
+	ensureFirewallRule = func(r platform.FirewallRule) (bool, error) {
 		applied[r.Name] = true
 		return true, nil
 	}
@@ -248,9 +248,10 @@ func TestDashboardFirewallEndpoints(t *testing.T) {
 	}
 	var ov struct {
 		Firewall struct {
-			Checked bool     `json:"checked"`
-			Missing []string `json:"missing"`
-			Error   string   `json:"error"`
+			Checked   bool     `json:"checked"`
+			Supported bool     `json:"supported"`
+			Missing   []string `json:"missing"`
+			Error     string   `json:"error"`
 		} `json:"firewall"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &ov); err != nil {
@@ -258,7 +259,7 @@ func TestDashboardFirewallEndpoints(t *testing.T) {
 	}
 	// On a non elevated process the check reports why it could not run instead of
 	// pretending everything is open.
-	if ov.Firewall.Checked && ov.Firewall.Error == "" && ov.Firewall.Missing == nil {
+	if ov.Firewall.Supported && ov.Firewall.Checked && ov.Firewall.Error == "" && ov.Firewall.Missing == nil {
 		t.Log("firewall state reported as fully open (running elevated)")
 	}
 
@@ -267,6 +268,17 @@ func TestDashboardFirewallEndpoints(t *testing.T) {
 	areq := httptest.NewRequest(http.MethodPost, "/api/action/firewall", nil)
 	aw := httptest.NewRecorder()
 	srv.http.Handler.ServeHTTP(aw, areq)
+	if !platform.FirewallSupported() {
+		// Linux and OpenBSD manage their own packet filter; the endpoint reports
+		// that instead of pretending to have opened anything.
+		if aw.Code != http.StatusNotImplemented {
+			t.Fatalf("firewall action = %d, want 501 on this platform: %s", aw.Code, aw.Body.String())
+		}
+		if len(applied) != 0 {
+			t.Fatalf("firewall action ran on a platform without firewall support: %v", applied)
+		}
+		return
+	}
 	if aw.Code != http.StatusOK && aw.Code != http.StatusForbidden && aw.Code != http.StatusInternalServerError {
 		t.Fatalf("firewall action = %d: %s", aw.Code, aw.Body.String())
 	}

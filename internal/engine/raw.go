@@ -359,7 +359,7 @@ func (r *RawListener) captureLoop() {
 			}
 		}
 		for i := 0; i < 256; i++ { // drain the burst, then wait again
-			n, err := r.cap.Receive(buf)
+			pkt, err := r.cap.ReceivePacket(buf)
 			if err != nil {
 				if netutil.WouldBlock(err) {
 					break
@@ -373,13 +373,13 @@ func (r *RawListener) captureLoop() {
 				r.st.Error("capture: " + err.Error())
 				break
 			}
-			if n < 20 {
+			if len(pkt) < 20 {
 				continue
 			}
 			// handlePacket only reads its input (the forwarded copy is a separate
 			// buffer), so the captured bytes are used in place and reused on the
 			// next iteration.
-			r.handlePacket(buf[:n])
+			r.handlePacket(pkt)
 		}
 	}
 }

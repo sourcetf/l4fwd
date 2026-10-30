@@ -67,8 +67,9 @@ func NewMultiListener(rule *config.Rule, set config.Settings, st *stats.RuleStat
 	partCount := len(protoNumbers) + 2 // + TCP + UDP
 	share := config.AllProtocolSessionShare(rule, partCount)
 
-	// TCP: the kernel stack has to terminate it (Windows refuses raw TCP), which
-	// is also why Validate requires a target port for an "all" rule.
+	// TCP: the kernel stack has to terminate it (a raw socket cannot carry a
+	// stateful transport, and Windows refuses IPPROTO_TCP outright), which is
+	// also why Validate requires a target port for an "all" rule.
 	//
 	// The TCP half does not take the equal share: a raw or UDP session can be
 	// created from a spoofed packet, so their caps are a real protection, while a

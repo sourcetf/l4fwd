@@ -166,8 +166,8 @@ func (c *Config) Clone() *Config {
 // Kinds returns the rule kinds for the UI.
 func Kinds() []string { return []string{KindTCP, KindUDP, KindRaw} }
 
-// ProtoTCPNumber is the IP protocol number of TCP, which needs special
-// handling because Windows will not let a raw socket carry it.
+// ProtoTCPNumber is the IP protocol number of TCP, which needs special handling
+// because a stateful transport cannot be relayed packet by packet.
 const ProtoTCPNumber = 6
 
 // protoNames maps raw protocol keywords to numbers.
@@ -219,8 +219,9 @@ func (r *Rule) IsProtocolAll() bool {
 //	0   reserved
 //	4   IP-in-IP, 41 IPv6-in-IP: only the outer header is visible, so the relay
 //	    could not rewrite the inner packet usefully
-//	6   TCP and 17 UDP: Windows refuses raw TCP and plain UDP forwarding is
-//	    handled by the ordinary TCP/UDP listeners of the same rule
+//	6   TCP and 17 UDP: TCP needs connection state the relay does not keep, and
+//	    plain UDP forwarding is handled by the ordinary TCP/UDP listeners of the
+//	    same rule
 //	255 IPPROTO_RAW: send-only
 func (r *Rule) ProtocolList() ([]int, error) {
 	if !r.IsProtocolAll() {
@@ -268,8 +269,9 @@ func ProtocolName(n int) string {
 // Raw transport modes for raw rules.
 const (
 	// RawOwn uses the relay's own raw socket on the rule's protocol number.
-	// This covers every protocol except TCP, which Windows refuses to let a raw
-	// socket bind or inject (bind/send fail with WSAEINVAL).
+	// This covers every protocol except TCP, which needs connection state the
+	// relay does not keep (and which Windows refuses to let a raw socket carry at
+	// all).
 	RawOwn = "own"
 	// RawTransparent hands the connection to the kernel stack and forwards it to
 	// a real TCP target port. This is what makes hand crafted TCP traffic — a
@@ -282,7 +284,7 @@ const (
 func Transports() []string { return []string{RawOwn, RawTransparent} }
 
 // IsTCPShaped reports whether the rule targets the TCP protocol itself, which
-// cannot be handled by a raw socket on Windows.
+// cannot be handled by a stateless raw socket relay.
 func (r *Rule) IsTCPShaped() bool {
 	if r.Kind != KindRaw {
 		return false
@@ -395,7 +397,7 @@ func (r *Rule) Validate() error {
 				}
 			}
 			if n == ProtoTCPNumber && r.RawTransport == RawOwn {
-				return errors.New("Windows 不允许原始套接字处理 TCP：请把转发方式改为 transparent（TCP 透明转发），或把协议填 all")
+				return errors.New("原始套接字无法承载有状态 TCP：请把转发方式改为 transparent（TCP 透明转发），或把协议填 all")
 			}
 			if n == protoRawNumber && r.RawTransport == RawOwn {
 				return errors.New("协议号 255（IPPROTO_RAW）只能发包不能收包，请改用 all 或具体协议号")

@@ -1,6 +1,7 @@
-// Command l4fwd is a Windows port forwarder: it listens on local ports and
-// relays traffic at layer 4 (TCP/UDP), and can also relay arbitrary IP
-// protocols through raw sockets so that custom, non-TCP/UDP protocols work.
+// Command l4fwd is a layer 4 and raw IP port forwarder for Windows, Linux and
+// OpenBSD: it listens on local ports and relays traffic at layer 4 (TCP/UDP),
+// and can also relay arbitrary IP protocols through raw sockets so that custom,
+// non-TCP/UDP protocols work.
 package main
 
 import (
@@ -28,7 +29,7 @@ func main() {
 	level := flag.String("log-level", "", "日志级别：debug | info | warn | error")
 	logFile := flag.String("log-file", "", "日志文件路径（留空则只输出到控制台）")
 	showVersion := flag.Bool("version", false, "显示版本并退出")
-	fw := flag.Bool("firewall", false, "为当前规则创建 Windows 防火墙入站放行规则（需管理员）")
+	fw := flag.Bool("firewall", false, "为当前规则创建 Windows 防火墙入站放行规则（仅 Windows，需管理员）")
 	readOnly := flag.Bool("read-only", false, "面板只读模式：禁止通过网页修改规则")
 	check := flag.Bool("check", false, "只校验配置文件的合法性并退出")
 	flag.Usage = usage
@@ -97,7 +98,7 @@ func writable(dir string) bool {
 func usage() {
 	exe := filepath.Base(os.Args[0])
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s - Windows 四层端口转发 / 原始套接字任意协议转发\n\n", exe)
+	fmt.Fprintf(&b, "%s - 四层端口转发 / 原始套接字任意协议转发（Windows / Linux / OpenBSD）\n\n", exe)
 	fmt.Fprintf(&b, "用法:\n")
 	fmt.Fprintf(&b, "  %s [选项]\n\n", exe)
 	fmt.Fprintf(&b, "常用示例:\n")
@@ -107,7 +108,7 @@ func usage() {
 	fmt.Fprintf(&b, "  %s -type raw -proto 47 -target 10.0.0.9       转发 GRE(47) 协议到 10.0.0.9\n", exe)
 	fmt.Fprintf(&b, "  %s -type raw -proto 200 -listen 0.0.0.0 -target 10.0.0.9   转发自定义协议 200\n", exe)
 	fmt.Fprintf(&b, "  %s -type raw -proto all -listen 19001 -target 10.0.0.9:19001  一个端口收 TCP/UDP/任意协议\n", exe)
-	fmt.Fprintf(&b, "  %s -firewall                          为配置里所有端口添加防火墙放行规则\n\n", exe)
+	fmt.Fprintf(&b, "  %s -firewall                          为配置里所有端口添加 Windows 防火墙放行规则（仅 Windows）\n\n", exe)
 	fmt.Fprintf(&b, "选项:\n")
 	flag.PrintDefaults()
 }

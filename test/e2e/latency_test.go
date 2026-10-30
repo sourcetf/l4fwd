@@ -1,5 +1,3 @@
-//go:build windows
-
 package e2e
 
 import (
@@ -76,10 +74,12 @@ func TestTCPLatencyOverhead(t *testing.T) {
 	t.Logf("TCP 回环单字节往返：直连 avg=%v | TCP 转发 avg=%v（+%v）| 透明转发 avg=%v（+%v）",
 		direct.avg, plain.avg, plain.avg-direct.avg, gated.avg, gated.avg-direct.avg)
 	for label, got := range map[string]latencyStats{"TCP 转发": plain, "透明转发": gated} {
-		// A relay on loopback costs microseconds. A millisecond per round trip is a
-		// generous ceiling that still catches data being held back (Nagle, a
-		// batching timer, a poll interval): those cost tens of milliseconds.
-		if got.avg > direct.avg+time.Millisecond {
+		// A relay on loopback costs tens of microseconds on an idle machine. The
+		// ceiling is deliberately loose: CI runners and VMs are noisy (a direct
+		// round trip was measured at 0.5-0.7 ms there against 0.02 ms locally),
+		// while the failures this test exists for are much larger — Nagle costs a
+		// delayed ACK (~40 ms) and a batching poll a whole interval.
+		if got.avg > direct.avg+5*time.Millisecond {
 			t.Fatalf("%s每趟往返多花 %v（直连 %v，经转发 %v）：转发路径上存在人为等待",
 				label, got.avg-direct.avg, direct.avg, got.avg)
 		}
@@ -189,9 +189,9 @@ func TestTCPWriteWriteReadLatency(t *testing.T) {
 
 	t.Logf("写-写-读平均往返：直连 %v | TCP 转发 %v | 透明转发 %v", direct, plain, gated)
 	for label, got := range map[string]time.Duration{"TCP 转发": plain, "透明转发": gated} {
-		// Nagle costs a delayed ACK (tens of ms). Anything under a couple of
-		// milliseconds means the data left immediately.
-		if got > direct+2*time.Millisecond {
+		// Nagle costs a delayed ACK (tens of ms). A few milliseconds of slack keeps
+		// the measurement meaningful on a noisy VM without hiding that failure.
+		if got > direct+5*time.Millisecond {
 			t.Fatalf("%s 的写-写-读往返是 %v（直连 %v）：发送侧被 Nagle 拖住了", label, got, direct)
 		}
 	}

@@ -275,7 +275,7 @@ func (t *TransparentTCPListener) dialTarget() (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", target, err)
 	}
-	tuneUpstream(conn)
+	tuneTCP(conn, t.set.ListenerBufferKB())
 	return conn, nil
 }
 
@@ -411,22 +411,9 @@ func isClosed(ch chan struct{}) bool {
 	}
 }
 
-// tuneUpstream applies the socket options the relay needs on the target side.
-func tuneUpstream(conn net.Conn) {
-	if tc, ok := conn.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(30 * time.Second)
-	}
-}
-
 func (t *TransparentTCPListener) handle(client net.Conn) {
 	defer client.Close()
-	if tc, ok := client.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(30 * time.Second)
-	}
+	tuneTCP(client, t.set.ListenerBufferKB())
 	if !t.track(client) {
 		return // the listener is stopping; the connection was closed for us
 	}
